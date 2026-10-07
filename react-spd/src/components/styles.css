@@ -1,0 +1,14 @@
+@import url('https://fonts.googleapis.com/css2?family=Cookie&display=swap');
+
+.the-nautigal-regular {
+  font-family: "The Nautigal", cursive;
+  font-weight: 400;
+  font-style: normal;
+}
+
+.the-nautigal-bold {
+  font-family: "The Nautigal", cursive;
+  font-weight: 1000;
+  /* font-style: italic; */
+  font-size: 27px;
+}

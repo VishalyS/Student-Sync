@@ -1,0 +1,40 @@
+# Python virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python cache & build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Node dependencies and build outputs
+node_modules/
+dist/
+dist-ssr/
+
+# Environment files and credentials
+.env
+*.env
+.env.*
+!.env.example
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Browser automation & temporary test profiles
+scratch/edge_debug_profile/
+scratch/edge_*
+scratch/**/Crashpad/
+scratch/**/Default/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
