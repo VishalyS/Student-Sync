@@ -33,9 +33,15 @@ USERS_COLLECTION = os.getenv('USERS_COLLECTION', 'new_users')
 
 client = MongoClient(
     MONGO_URI,
-    connectTimeoutMS=30000,
-    socketTimeoutMS=30000,
-    serverSelectionTimeoutMS=30000,
+    connectTimeoutMS=60000,
+    socketTimeoutMS=60000,
+    serverSelectionTimeoutMS=60000,
+    maxPoolSize=50,
+    minPoolSize=10,
+    maxIdleTimeMS=45000,
+    waitQueueTimeoutMS=10000,
+    retryWrites=True,
+    retryReads=True,
     tlsCAFile=certifi.where()
 ) if MONGO_URI else None
 db = client[DB_NAME] if client else None
@@ -76,7 +82,8 @@ try:
         calculate_simulated_attendance,
         get_attendance_status,
         parse_daily_schedule,
-        summarize_student_attendance
+        summarize_student_attendance,
+        resolve_student_attendance_records
     )
     from backend.academic_calculator import (
         summarize_student_academics,
@@ -91,6 +98,7 @@ try:
     )
     from backend.planner_calculator import synthesize_academic_planner
     from backend.services_calculator import synthesize_campus_services
+    from backend.speed_ser import process_detected_changes
 except ImportError:
     from new_scrapers.login import login as modern_login
     from new_scrapers.send_mail import send_email, queue_tracked_email, send_email_direct
@@ -105,7 +113,8 @@ except ImportError:
         calculate_simulated_attendance,
         get_attendance_status,
         parse_daily_schedule,
-        summarize_student_attendance
+        summarize_student_attendance,
+        resolve_student_attendance_records
     )
     from academic_calculator import (
         summarize_student_academics,
@@ -120,6 +129,10 @@ except ImportError:
     )
     from planner_calculator import synthesize_academic_planner
     from services_calculator import synthesize_campus_services
+    try:
+        from speed_ser import process_detected_changes
+    except ImportError:
+        process_detected_changes = None
 
 
 
@@ -165,12 +178,29 @@ def sync_student_dual_portal(rollNo, password):
         print(f"StudZone 2 secondary session unavailable for {rollNo}: {legacy_session_res}")
 
     # Check existing user preferences & fields
+    # Check existing user preferences & fields
     existing_user = users_collection.find_one({"rollNo": rollNo}) if users_collection is not None else None
     existing_notifications = existing_user.get('notifications') if existing_user else None
 
+    # Robust fallback: preserve existing attendance baseline if portal attendance is currently updating / empty
+    has_fresh_att = bool(sz1_data and sz1_data.get('parsed_attendance') and len(sz1_data.get('parsed_attendance')) > 0)
+    prev_att_records = None
+    if existing_user:
+        prev_att_records, _, _ = resolve_student_attendance_records(existing_user)
+
+    if sz1_data:
+        if has_fresh_att:
+            sz1_data['is_previous_attendance'] = False
+        elif prev_att_records:
+            # Portal is updating or transiently empty; keep stored previous data
+            sz1_data['parsed_attendance'] = prev_att_records
+            sz1_data['is_previous_attendance'] = True
+            if not sz1_data.get('attendance_html') or '<td' not in sz1_data.get('attendance_html', ''):
+                sz1_data['attendance_html'] = existing_user.get('attendance_table') or existing_user.get('attendance', '')
+
     sync_status = {
         "profile": {"status": "synced", "timestamp": now_iso, "portal": "StudZone 1"},
-        "attendance": {"status": "synced" if sz1_data.get("attendance_html") else "no_data", "timestamp": now_iso, "portal": "StudZone 1"},
+        "attendance": {"status": "synced" if has_fresh_att else ("updating" if prev_att_records else "no_data"), "timestamp": now_iso, "portal": "StudZone 1"},
         "marks": {"status": "synced" if sz1_data.get("ca_marks_html") else "no_data", "timestamp": now_iso, "portal": "StudZone 1"},
         "results": {"status": "synced" if sz2_data.get("results_html") else "no_data", "timestamp": now_iso, "portal": "StudZone 2"},
         "cgpa": {"status": "synced" if sz2_data.get("cgpa") is not None else "no_data", "timestamp": now_iso, "portal": "StudZone 2"},
@@ -220,6 +250,8 @@ def sync_student_dual_portal(rollNo, password):
         "circulars": sz2_data.get("circulars", []) if sz2_data else (existing_user.get('circulars', []) if existing_user else []),
         "studzone1": sz1_data if sz1_data else (existing_user.get('studzone1', {}) if existing_user else {}),
         "studzone2": sz2_data if sz2_data else (existing_user.get('studzone2', {}) if existing_user else {}),
+        "previous_parsed_attendance": (sz1_data.get('parsed_attendance') if has_fresh_att else prev_att_records) or (existing_user.get('previous_parsed_attendance') if existing_user else None),
+        "attendance_table": (sz1_data.get('attendance_html') if has_fresh_att else (existing_user.get('attendance_table') if existing_user else sz1_data.get('attendance_html', ''))),
         "notifications": existing_notifications or {
             "attendance": True,
             "marks": True,
@@ -245,6 +277,14 @@ def sync_student_dual_portal(rollNo, password):
         "welcomeEmailSent": welcome_email_flag
     }
 
+    # CRITICAL: Detect granular changes against existing stored student baseline and dispatch email notifications
+    if existing_user and existing_user.get('baseline_initialized') is True and (sz1_data or sz2_data):
+        try:
+            if process_detected_changes:
+                process_detected_changes(rollNo, existing_user, sz1_data or {}, sz2_data or {}, db)
+        except Exception as change_err:
+            print(f"[CHANGE DETECTION ERROR] Failed during portal sync for {rollNo}: {change_err}")
+
     if users_collection is not None:
         users_collection.update_one(
             {"rollNo": rollNo},
@@ -257,10 +297,159 @@ def sync_student_dual_portal(rollNo, password):
     return merged_user, None
 
 
+def dispatch_welcome_email_to_student(roll_no, student_email=None, student_name=None, force=False):
+    """
+    Idempotently and reliably dispatches the official welcome email to the student's email address.
+    Sets welcomeEmailSent: True and logs to notifications_log.
+    If force is True, bypasses welcomeEmailSent check (e.g. user updated email or requested resend).
+    """
+    if users_collection is None:
+        return False, "Database unavailable"
+
+    roll_clean = roll_no.strip().upper()
+    user = users_collection.find_one({"rollNo": roll_clean})
+    if not user:
+        return False, "Student record not found in database"
+
+    if not force and user.get('welcomeEmailSent') is True:
+        return False, "Welcome email already sent"
+
+    target_email = (student_email or user.get('email') or f"{roll_clean.lower()}@psgtech.ac.in").strip()
+    name = (student_name or user.get('name') or roll_clean).strip()
+    first_name = name.split()[0].capitalize() if name else roll_clean
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+
+    welcome_hash = compute_change_hash(roll_clean, "welcome", "Account", "Welcome to Student Sync 🎓", f"welcome_{roll_clean}_{target_email.lower() if force else ''}")
+
+    welcome_title = "Welcome to Student Sync 🎓"
+    welcome_msg = f"Thank you for registering with Student Sync, {first_name}! From now on, you will receive meaningful notifications when relevant information changes in your connected student portals."
+
+    notif_doc = {
+        "rollNo": roll_clean,
+        "studentRollNo": roll_clean,
+        "recipient_email": target_email,
+        "category": "welcome",
+        "type": "welcome",
+        "title": welcome_title,
+        "description": welcome_msg,
+        "message": welcome_msg,
+        "source": "Student Sync",
+        "module": "Account",
+        "timestamp": now_iso,
+        "createdAt": now_iso,
+        "created_at": now,
+        "updated_at": now,
+        "read": False,
+        "changeHash": welcome_hash,
+        "changeData": {
+            "event": "welcome",
+            "studentName": name,
+            "rollNo": roll_clean,
+            "studentEmail": target_email
+        },
+        "status": "pending",
+        "error": None
+    }
+
+    notif_id = None
+    if notifications_collection is not None:
+        try:
+            res = notifications_collection.insert_one(notif_doc)
+            notif_id = res.inserted_id
+        except DuplicateKeyError:
+            if not force:
+                return False, "Duplicate welcome notification suppressed"
+            existing = notifications_collection.find_one({"changeHash": welcome_hash})
+            if existing:
+                notif_id = existing.get('_id')
+
+    welcome_subject = "Welcome to Student Sync 🎓"
+    welcome_body = f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="margin: 0; padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0b0d13; color: #f3f4f6;">
+      <div style="max-width: 560px; margin: 0 auto; background-color: #131620; border: 1px solid #232738; border-radius: 12px; padding: 28px;">
+        <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #a78bfa; font-weight: 600; margin-bottom: 6px;">
+          Student Sync • Registration Confirmed
+        </div>
+        <h2 style="color: #ffffff; font-size: 20px; margin-top: 0; margin-bottom: 12px;">Welcome to Student Sync 🎓</h2>
+        <p style="color: #e5e7eb; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
+          Hi <strong style="color: #ffffff;">{name}</strong> (<span style="font-family: monospace; color: #c4b5fd;">{roll_clean}</span>),
+        </p>
+        <p style="color: #9ca3af; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
+          Thank you for registering with Student Sync! Your PSG Tech student portals (StudZone 1 & StudZone 2) have been successfully linked and synchronized.
+        </p>
+        <p style="color: #9ca3af; font-size: 14px; line-height: 1.6; margin-bottom: 20px;">
+          From now on, you will receive meaningful notifications when relevant information changes in your connected student portals:
+        </p>
+
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px; color: #d1d5db; margin-bottom: 24px; background-color: #181c2b; border-radius: 8px; border: 1px solid #222738; overflow: hidden;">
+          <tr style="border-bottom: 1px solid #222738;">
+            <td style="padding: 10px 14px; color: #9ca3af; width: 40%;">📊 Attendance Tracking</td>
+            <td style="padding: 10px 14px; color: #ffffff;">Real-time percentage alerts & safe bunk predictions</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #222738;">
+            <td style="padding: 10px 14px; color: #9ca3af;">📝 CA Marks</td>
+            <td style="padding: 10px 14px; color: #ffffff;">Instant notifications when internal test marks are posted</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #222738;">
+            <td style="padding: 10px 14px; color: #9ca3af;">📅 Exam Schedules</td>
+            <td style="padding: 10px 14px; color: #ffffff;">Timetable publications and slot changes</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #222738;">
+            <td style="padding: 10px 14px; color: #9ca3af;">🪑 Seating Arrangements</td>
+            <td style="padding: 10px 14px; color: #ffffff;">Hall allocations & exam seat assignments</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #222738;">
+            <td style="padding: 10px 14px; color: #9ca3af;">💳 Academic Fees</td>
+            <td style="padding: 10px 14px; color: #ffffff;">Dues alerts and receipt status updates</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px 14px; color: #9ca3af;">📈 Semester Results</td>
+            <td style="padding: 10px 14px; color: #ffffff;">Grade announcements & CGPA updates</td>
+          </tr>
+        </table>
+
+        <div style="padding: 14px; border-radius: 8px; background-color: #181c2b; border: 1px solid #222738; font-size: 13px; color: #9ca3af; margin-bottom: 24px;">
+          <div style="margin-bottom: 6px;"><strong style="color: #ffffff;">Monitoring Status:</strong> <span style="color: #34d399; font-weight: 600;">Active & Synchronized (monitoring is now active)</span></div>
+          <div><strong style="color: #ffffff;">Primary Alert Email:</strong> <span style="font-family: monospace; color: #93c5fd;">{target_email}</span></div>
+        </div>
+
+        <div style="text-align: center; margin-bottom: 24px;">
+          <a href="http://localhost:3000/login" style="display: inline-block; padding: 12px 24px; background-color: #8b5cf6; color: #ffffff; text-decoration: none; font-size: 13px; font-weight: 600; border-radius: 8px;">
+            Open Student Sync Dashboard →
+          </a>
+        </div>
+
+        <div style="border-top: 1px solid #1c202e; padding-top: 16px; font-size: 12px; color: #6b7280; text-align: center;">
+          © 2026 Student Sync | PSG College of Technology
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+    print(f"[WELCOME EMAIL] Dispatching welcome email to {target_email} for {roll_clean}")
+    w_success, w_err = send_email_direct(target_email, welcome_subject, welcome_body, rollNo=roll_clean, notif_type="welcome", notif_id=notif_id)
+    if not w_success:
+        print(f"[WELCOME EMAIL] Direct send failed ({w_err}); enqueueing into tracked background worker queue...")
+        queue_tracked_email(roll_clean, target_email, "welcome", welcome_subject, welcome_body, notif_id=notif_id)
+
+    users_collection.update_one(
+        {"rollNo": roll_clean},
+        {"$set": {
+            "email": target_email,
+            "welcomeEmailSent": True,
+            "welcome_email_sent_at": now_iso
+        }}
+    )
+    return True, None
+
+
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json() or {}
-    rollNo = (data.get('rollNo') or '').strip().upper()
+    rollNo = (data.get('rollNo') or data.get('rollno') or '').strip().upper()
     password = (data.get('password') or '').strip()
     custom_email = (data.get('email') or '').strip()
 
@@ -268,17 +457,25 @@ def register():
         return jsonify({"message": "Invalid credentials. Please check your roll number and password."}), 400
 
     try:
-        # 1. Check whether student is genuinely new BEFORE creating/upserting the MongoDB user
-        existing_user_doc = users_collection.find_one({"rollNo": rollNo}) if users_collection is not None else None
-        is_new_registration = existing_user_doc is None
+        # 1. Check whether student is already registered in MongoDB
+        existing_user_doc = users_collection.find_one({
+            "rollNo": {"$regex": f"^{re.escape(rollNo)}$", "$options": "i"}
+        }) if users_collection is not None else None
 
+        if existing_user_doc:
+            print(f"[REGISTRATION] Duplicate registration blocked for existing student: {rollNo}")
+            return jsonify({
+                "message": "This student is already registered.",
+                "detail": "Already registered. Please Login.",
+                "already_registered": True
+            }), 409
+
+        is_new_registration = True
         now_iso = datetime.now(timezone.utc).isoformat()
-        student_email = custom_email or (existing_user_doc.get('email') if existing_user_doc else None) or f"{rollNo.lower()}@psgtech.ac.in"
+        student_email = custom_email or f"{rollNo.lower()}@psgtech.ac.in"
 
         # Step 1: Save user placeholder with uninitialized baseline to prevent race condition.
-        # If the background synchronizer runs concurrently while portal authentication and scraping occur,
-        # baseline_initialized: False and monitoring_enabled: False guarantee the worker skips this user.
-        if is_new_registration and users_collection is not None:
+        if users_collection is not None:
             print(f"[REGISTRATION] New student detected: {rollNo}. Saving initial uninitialized record.")
             users_collection.update_one(
                 {"rollNo": rollNo},
@@ -293,125 +490,25 @@ def register():
                 }},
                 upsert=True
             )
-        elif not is_new_registration:
-            print(f"[REGISTRATION] Existing student re-authenticating/updating: {rollNo}")
 
         # Step 2 & 3: Authenticate with portals and scrape current academic data
         user_doc, err = sync_student_dual_portal(rollNo, password)
         if err or not user_doc:
             if is_new_registration and users_collection is not None:
-                # Clean up uninitialized placeholder if authentication fails
                 users_collection.delete_one({"rollNo": rollNo, "baseline_initialized": False})
             return jsonify({"message": err or "Invalid credentials. Please check your roll number and password."}), 401
 
-        # Step 4 & 5: Store initial baseline and Mark monitoring active
-        # sync_student_dual_portal has stored the scraped data as the baseline,
-        # set sync timestamps, baseline_initialized=True, and monitoring_enabled=True.
+        # Step 4 & 5: Store initial baseline and custom email if specified
         if custom_email and users_collection is not None:
             users_collection.update_one({"rollNo": rollNo}, {"$set": {"email": custom_email}})
             user_doc["email"] = custom_email
 
         student_name = user_doc.get('name', rollNo)
-        first_name = student_name.split()[0].capitalize() if student_name else rollNo
         student_email = user_doc.get('email') or student_email
         admin_email = os.getenv("ADMIN_EMAIL", "studentsync12@gmail.com").strip()
 
-        # Step 6: Send exactly ONE welcome email to that user's registered email address
-        # Store persistent flag welcomeEmailSent: True
-        already_sent = bool(existing_user_doc and existing_user_doc.get('welcomeEmailSent')) or bool(user_doc.get('welcomeEmailSent'))
-        if is_new_registration and not already_sent and notifications_collection is not None:
-            try:
-                # A. Welcome Email
-                welcome_hash = compute_change_hash(rollNo, "welcome", "Account", "Welcome to Student Sync 🎓", f"welcome_{rollNo}")
-                existing_welcome = notifications_collection.find_one({
-                    "changeHash": welcome_hash
-                })
-
-                if not existing_welcome:
-                    welcome_title = "Welcome to Student Sync 🎓"
-                    welcome_msg = f"Thank you for registering with Student Sync, {first_name}! Student Sync monitoring is now active for your account."
-                    now_utc = datetime.now(timezone.utc)
-                    welcome_doc = {
-                        "rollNo": rollNo,
-                        "studentRollNo": rollNo,
-                        "recipient_email": student_email,
-                        "category": "welcome",
-                        "type": "welcome",
-                        "title": welcome_title,
-                        "description": welcome_msg,
-                        "message": welcome_msg,
-                        "source": "Student Sync",
-                        "module": "Account",
-                        "timestamp": now_iso,
-                        "createdAt": now_iso,
-                        "created_at": now_utc,
-                        "updated_at": now_utc,
-                        "read": False,
-                        "changeHash": welcome_hash,
-                        "changeData": {
-                            "event": "welcome",
-                            "studentName": student_name,
-                            "rollNo": rollNo,
-                            "studentEmail": student_email
-                        },
-                        "status": "pending",
-                        "error": None
-                    }
-                    try:
-                        res_welcome = notifications_collection.insert_one(welcome_doc)
-                    except DuplicateKeyError:
-                        print(f"[REGISTRATION] Duplicate welcome notification suppressed by unique index for {rollNo}")
-                        res_welcome = None
-
-                    if res_welcome:
-                        welcome_subject = "Welcome to Student Sync 🎓"
-                        welcome_body = f"""
-                        <!DOCTYPE html>
-                        <html>
-                        <body style="margin: 0; padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0b0d13; color: #f3f4f6;">
-                          <div style="max-width: 560px; margin: 0 auto; background-color: #131620; border: 1px solid #232738; border-radius: 12px; padding: 28px;">
-                            <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #a78bfa; font-weight: 600; margin-bottom: 6px;">
-                              Student Sync • Registration Confirmation
-                            </div>
-                            <h2 style="color: #ffffff; font-size: 20px; margin-top: 0; margin-bottom: 12px;">Welcome to Student Sync 🎓</h2>
-                            <p style="color: #9ca3af; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
-                              Hi <strong style="color: #ffffff;">{student_name}</strong> (<span style="font-family: monospace; color: #c4b5fd;">{rollNo}</span>),
-                            </p>
-                            <p style="color: #9ca3af; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
-                              Thank you for registering with Student Sync! Student Sync monitoring is now active for your account.
-                            </p>
-                            <p style="color: #9ca3af; font-size: 14px; line-height: 1.6; margin-bottom: 20px;">
-                              We have created your initial monitoring baseline from your current StudZone 1 and StudZone 2 academic records. You will receive real-time, user-specific notifications directly to this email address whenever genuine updates occur for your attendance, CA marks, exam timetable, seat allocations, fees, or semester results.
-                            </p>
-                            <div style="padding: 14px; border-radius: 8px; background-color: #181c2b; border: 1px solid #222738; font-size: 13px; color: #9ca3af; margin-bottom: 20px;">
-                              <div style="margin-bottom: 4px;"><strong style="color: #ffffff;">Monitoring Status:</strong> <span style="color: #34d399;">Active & Synchronized</span></div>
-                              <div><strong style="color: #ffffff;">Notification Email:</strong> <span style="font-family: monospace; color: #93c5fd;">{student_email}</span></div>
-                            </div>
-                            <div style="border-top: 1px solid #1c202e; padding-top: 16px; font-size: 12px; color: #6b7280; text-align: center;">
-                              © 2026 Student Sync | PSG College of Technology
-                            </div>
-                          </div>
-                        </body>
-                        </html>
-                        """
-                        print(f"[EMAIL] Welcome recipient: {student_email}")
-                        w_success, w_err = send_email_direct(student_email, welcome_subject, welcome_body, rollNo=rollNo, notif_type="welcome", notif_id=res_welcome.inserted_id)
-                        if w_success:
-                            print(f"[EMAIL] Welcome send result: SUCCESS")
-                        else:
-                            print(f"[EMAIL] Welcome send result: FAILED ({w_err})")
-
-                    # Set persistent flag welcomeEmailSent: True on the user document
-                    if users_collection is not None:
-                        users_collection.update_one({"rollNo": rollNo}, {"$set": {"welcomeEmailSent": True, "welcome_email_sent_at": now_iso}})
-                        user_doc["welcomeEmailSent"] = True
-                else:
-                    print(f"[EMAIL] Welcome email already sent for {rollNo}; skipping duplicate.")
-                    if users_collection is not None:
-                        users_collection.update_one({"rollNo": rollNo}, {"$set": {"welcomeEmailSent": True}})
-                        user_doc["welcomeEmailSent"] = True
-            except Exception as w_err:
-                print(f"[EMAIL] Welcome notification handling error: {w_err}")
+        # Step 6: Dispatch welcome email reliably
+        dispatch_welcome_email_to_student(rollNo, student_email=student_email, student_name=student_name)
 
         # B. Admin Registration Email (independent non-blocking notification)
         if is_new_registration and notifications_collection is not None:
@@ -760,7 +857,12 @@ def get_authenticated_student(req):
     if users_collection is None:
         return None, 500, "Database unavailable."
 
-    user_doc = users_collection.find_one({"rollNo": authenticated_roll})
+    try:
+        user_doc = users_collection.find_one({"rollNo": authenticated_roll})
+    except Exception as db_err:
+        print(f"MongoDB connection glitch in get_authenticated_student: {db_err}")
+        return None, 503, "Database connection is temporarily reconnecting. Please retry in a moment."
+
     if not user_doc:
         return None, 404, f"Student record for {authenticated_roll} not found."
 
@@ -778,6 +880,33 @@ def login():
         user = users_collection.find_one({"rollNo": rollNo, "password": password})
 
         if user:
+            # Auto-sync fresh portal data if last sync was more than 3 minutes ago
+            last_sync_iso = user.get('last_successful_studzone1') or user.get('lastSyncedAt')
+            needs_sync = True
+            if last_sync_iso:
+                try:
+                    sync_time = datetime.fromisoformat(last_sync_iso.replace('Z', '+00:00'))
+                    if (datetime.now(timezone.utc) - sync_time).total_seconds() < 180:
+                        needs_sync = False
+                except Exception:
+                    needs_sync = True
+
+            if needs_sync:
+                try:
+                    updated_doc, err = sync_student_dual_portal(rollNo, password)
+                    if updated_doc:
+                        user = updated_doc
+                except Exception as sync_e:
+                    print(f"[LOGIN SYNC] Fallback to cached user doc: {sync_e}")
+
+            sz1 = user.get('studzone1')
+            if isinstance(sz1, dict) and not sz1.get('parsed_attendance'):
+                prev_att, is_prev, _ = resolve_student_attendance_records(user)
+                if prev_att:
+                    user['studzone1']['parsed_attendance'] = prev_att
+                    user['is_previous_attendance'] = True
+                    user['previous_parsed_attendance'] = prev_att
+
             if '_id' in user:
                 user['_id'] = str(user['_id'])
             user.pop('password', None)
@@ -787,6 +916,13 @@ def login():
         # Fallback: attempt direct portal authentication if not found in db
         user_doc, err = sync_student_dual_portal(rollNo, password)
         if user_doc and not err:
+            # Automatically dispatch welcome email for first-time account linking
+            if not user_doc.get('welcomeEmailSent'):
+                try:
+                    dispatch_welcome_email_to_student(rollNo, student_email=user_doc.get('email'), student_name=user_doc.get('name'))
+                except Exception as w_err:
+                    print(f"[LOGIN WELCOME EMAIL] Error: {w_err}")
+
             if '_id' in user_doc:
                 user_doc['_id'] = str(user_doc['_id'])
             user_doc.pop('password', None)
@@ -798,6 +934,44 @@ def login():
     except Exception as e:
         print(f"Error during login: {str(e)}")
         return jsonify({"message": "Server error. Please try again later."}), 500
+
+
+# Endpoint to trigger or resend Welcome Email on demand
+@app.route('/resend-welcome', methods=['POST'])
+@app.route('/api/resend-welcome', methods=['POST'])
+def resend_welcome_email():
+    data = request.get_json() or {}
+    rollNo = (data.get('rollNo') or data.get('rollno') or '').strip().upper()
+    custom_email = (data.get('email') or '').strip()
+
+    if not rollNo:
+        return jsonify({"message": "Roll number is required."}), 400
+
+    if users_collection is None:
+        return jsonify({"message": "Database not connected."}), 500
+
+    try:
+        user = users_collection.find_one({"rollNo": rollNo})
+        if not user:
+            return jsonify({"message": "Student not found in database. Please log in or register first."}), 404
+
+        target_email = custom_email or user.get('email') or f"{rollNo.lower()}@psgtech.ac.in"
+        if custom_email:
+            users_collection.update_one({"rollNo": rollNo}, {"$set": {"email": custom_email}})
+
+        ok, err = dispatch_welcome_email_to_student(rollNo, student_email=target_email, student_name=user.get('name'), force=True)
+        if ok:
+            return jsonify({
+                "message": f"Welcome email sent successfully to {target_email}!",
+                "rollNo": rollNo,
+                "email": target_email
+            }), 200
+        else:
+            return jsonify({"message": err or "Failed to send welcome email."}), 400
+
+    except Exception as e:
+        print(f"Error resending welcome email: {e}")
+        return jsonify({"message": "Server error while sending welcome email."}), 500
 
 
 # Profile fetching and manual refresh route
@@ -818,6 +992,14 @@ def profile():
             if updated_doc:
                 user = updated_doc
 
+        sz1 = user.get('studzone1')
+        if isinstance(sz1, dict) and not sz1.get('parsed_attendance'):
+            prev_att, is_prev, _ = resolve_student_attendance_records(user)
+            if prev_att:
+                user['studzone1']['parsed_attendance'] = prev_att
+                user['is_previous_attendance'] = True
+                user['previous_parsed_attendance'] = prev_att
+
         if '_id' in user:
             user['_id'] = str(user['_id'])
         user.pop('password', None)
@@ -831,34 +1013,246 @@ def profile():
 
 # Update notification preferences and/or email address
 @app.route('/notifications', methods=['POST'])
+@app.route('/api/notifications', methods=['POST'])
 def update_notifications():
     data = request.get_json() or {}
-    rollNo = (data.get('rollNo') or '').strip().upper()
+    rollNo = (data.get('rollNo') or data.get('rollno') or '').strip().upper()
     notifications = data.get('notifications')
     email = (data.get('email') or '').strip()
+    monitoring_enabled = data.get('monitoring_enabled')
+
+    if not rollNo:
+        return jsonify({"message": "Roll number is required."}), 400
+
+    if users_collection is None:
+        return jsonify({"message": "Database not connected."}), 500
 
     try:
+        user = users_collection.find_one({"rollNo": rollNo})
+        if not user:
+            return jsonify({"message": "User not found."}), 404
+
         update_fields = {}
-        if notifications is not None:
-            update_fields["notifications"] = notifications
-        if email:
+        changes_detected = []
+
+        # Check email change
+        old_email = (user.get('email') or '').strip()
+        if email and email.lower() != old_email.lower():
             update_fields["email"] = email
-        monitoring_enabled = data.get('monitoring_enabled')
-        if monitoring_enabled is not None:
+            changes_detected.append(f"Notification email updated from {old_email or 'default'} to {email}")
+
+        # Check monitoring toggle
+        old_monitoring = user.get('monitoring_enabled', True)
+        if monitoring_enabled is not None and bool(monitoring_enabled) != old_monitoring:
             update_fields["monitoring_enabled"] = bool(monitoring_enabled)
+            changes_detected.append(f"Automated monitoring {'enabled' if monitoring_enabled else 'disabled'}")
+
+        # Check notification categories
+        if notifications is not None and isinstance(notifications, dict):
+            old_notifs = user.get('notifications') or {}
+            changed_channels = []
+            for channel, state in notifications.items():
+                if old_notifs.get(channel) != state:
+                    changed_channels.append(f"{channel}: {'ON' if state else 'OFF'}")
+            if changed_channels:
+                changes_detected.append(f"Alert channels modified ({', '.join(changed_channels)})")
+            update_fields["notifications"] = notifications
 
         if not update_fields:
-            return jsonify({"message": "No update fields provided."}), 400
+            return jsonify({"message": "No settings changed.", "email": old_email or None}), 200
 
-        result = users_collection.update_one({"rollNo": rollNo}, {"$set": update_fields})
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        update_fields["settingsUpdatedAt"] = now_iso
 
-        if result.matched_count > 0:
-            return jsonify({"message": "Settings updated successfully!", "email": email if email else None})
-        else:
-            return jsonify({"message": "User not found."}), 404
+        users_collection.update_one({"rollNo": rollNo}, {"$set": update_fields})
+
+        # If settings were genuinely changed, log notification and dispatch confirmation email
+        if changes_detected:
+            recipient_email = email or old_email or f"{rollNo.lower()}@psgtech.ac.in"
+            student_name = user.get('name', rollNo)
+            title = "Account Settings Updated"
+            change_summary = "; ".join(changes_detected)
+            message = f"Your Student Sync account settings were updated on {now_iso[:19].replace('T', ' ')} UTC: {change_summary}."
+            chash = compute_change_hash(rollNo, "preferences", "Settings", title, message, f"pref_{now_iso[:19]}")
+
+            notif_doc = {
+                "rollNo": rollNo,
+                "studentRollNo": rollNo,
+                "recipient_email": recipient_email,
+                "category": "preferences",
+                "type": "system",
+                "title": title,
+                "description": message,
+                "message": message,
+                "source": "Student Sync",
+                "module": "Settings",
+                "timestamp": now_iso,
+                "createdAt": now_iso,
+                "created_at": now,
+                "updated_at": now,
+                "read": False,
+                "changeHash": chash,
+                "changeData": {
+                    "event": "settings_updated",
+                    "changes": changes_detected,
+                    "updatedAt": now_iso
+                },
+                "status": "pending",
+                "error": None
+            }
+
+            notif_id = None
+            if notifications_collection is not None:
+                try:
+                    res = notifications_collection.insert_one(notif_doc)
+                    notif_id = res.inserted_id
+                except DuplicateKeyError:
+                    pass
+
+            email_subject = "Student Sync — Notification Preferences & Settings Updated"
+            items_html = "".join([f"<li style='margin-bottom: 6px; color: #e5e7eb;'>{item}</li>" for item in changes_detected])
+            email_body = f"""
+            <!DOCTYPE html>
+            <html>
+            <body style="margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0b0d13; color: #f3f4f6;">
+              <div style="max-width: 520px; margin: 0 auto; background-color: #131620; border: 1px solid #232738; border-radius: 12px; padding: 24px;">
+                <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #818cf8; font-weight: 600; margin-bottom: 6px;">
+                  Account Notification • Settings Update
+                </div>
+                <h2 style="color: #ffffff; font-size: 18px; margin-top: 0; margin-bottom: 12px;">{title}</h2>
+                <p style="color: #9ca3af; font-size: 13px; line-height: 1.5; margin-bottom: 14px;">
+                  The following updates were applied to your Student Sync account:
+                </p>
+                <ul style="padding-left: 20px; font-size: 13px; line-height: 1.6; margin-bottom: 20px;">
+                  {items_html}
+                </ul>
+                <div style="padding: 12px; border-radius: 8px; background-color: #181c2b; border: 1px solid #222738; font-size: 12px; color: #9ca3af; margin-bottom: 20px;">
+                  Student: <strong style="color: #ffffff;">{student_name}</strong> (<span style="font-family: monospace; color: #c4b5fd;">{rollNo}</span>)<br/>
+                  Primary Alert Email: <span style="font-family: monospace; color: #93c5fd;">{recipient_email}</span>
+                </div>
+                <div style="border-top: 1px solid #1c202e; padding-top: 14px; font-size: 11px; color: #6b7280; text-align: center;">
+                  © 2026 Student Sync | Academic Notification Platform
+                </div>
+              </div>
+            </body>
+            </html>
+            """
+            try:
+                queue_tracked_email(rollNo, recipient_email, "system", email_subject, email_body, notif_id=notif_id)
+            except Exception as q_err:
+                print(f"[SETTINGS EMAIL] Error queueing preferences email for {rollNo}: {q_err}")
+
+        return jsonify({"message": "Settings updated successfully!", "email": email or old_email or None})
 
     except Exception as e:
         print(f"Error updating notifications: {str(e)}")
+        return jsonify({"message": "Server error. Please try again later."}), 500
+
+
+# Update StudZone Portal Password Route
+@app.route('/update', methods=['POST'])
+@app.route('/api/update', methods=['POST'])
+def update_password():
+    data = request.get_json() or {}
+    rollNo = (data.get('rollno') or data.get('rollNo') or '').strip().upper()
+    password = (data.get('password') or '').strip()
+
+    if not rollNo or not password:
+        return jsonify({"message": "Roll number and password are required."}), 400
+
+    if users_collection is None:
+        return jsonify({"message": "Database not connected."}), 500
+
+    try:
+        user = users_collection.find_one({"rollNo": rollNo})
+        if not user:
+            return jsonify({"message": "Student not found. Please verify roll number."}), 404
+
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+
+        users_collection.update_one(
+            {"rollNo": rollNo},
+            {"$set": {"password": password, "passwordUpdatedAt": now_iso}}
+        )
+
+        recipient_email = (user.get('email') or '').strip() or f"{rollNo.lower()}@psgtech.ac.in"
+        student_name = user.get('name', rollNo)
+
+        title = "Security Alert: Portal Password Updated"
+        message = f"Your StudZone portal password for account {rollNo} was updated successfully on {now_iso[:19].replace('T', ' ')} UTC."
+        chash = compute_change_hash(rollNo, "security", "Security", title, message, f"pwd_{now_iso[:19]}")
+
+        notif_doc = {
+            "rollNo": rollNo,
+            "studentRollNo": rollNo,
+            "recipient_email": recipient_email,
+            "category": "security",
+            "type": "security",
+            "title": title,
+            "description": message,
+            "message": message,
+            "source": "Student Sync",
+            "module": "Account Security",
+            "timestamp": now_iso,
+            "createdAt": now_iso,
+            "created_at": now,
+            "updated_at": now,
+            "read": False,
+            "changeHash": chash,
+            "changeData": {
+                "event": "password_updated",
+                "timestamp": now_iso
+            },
+            "status": "pending",
+            "error": None
+        }
+
+        notif_id = None
+        if notifications_collection is not None:
+            try:
+                res = notifications_collection.insert_one(notif_doc)
+                notif_id = res.inserted_id
+            except DuplicateKeyError:
+                pass
+
+        email_subject = "Student Sync — Security Alert: Password Updated"
+        email_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <body style="margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0b0d13; color: #f3f4f6;">
+          <div style="max-width: 520px; margin: 0 auto; background-color: #131620; border: 1px solid #232738; border-radius: 12px; padding: 24px;">
+            <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #f87171; font-weight: 600; margin-bottom: 6px;">
+              Security Notification • Account Protection
+            </div>
+            <h2 style="color: #ffffff; font-size: 18px; margin-top: 0; margin-bottom: 12px;">{title}</h2>
+            <p style="color: #e5e7eb; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
+              {message}
+            </p>
+            <div style="padding: 12px; border-radius: 8px; background-color: #181c2b; border: 1px solid #222738; font-size: 12px; color: #9ca3af; margin-bottom: 20px;">
+              Student: <strong style="color: #ffffff;">{student_name}</strong> (<span style="font-family: monospace; color: #c4b5fd;">{rollNo}</span>)<br/>
+              Timestamp: <span style="color: #ffffff;">{now_iso[:19].replace('T', ' ')} UTC</span>
+            </div>
+            <p style="color: #9ca3af; font-size: 12px; margin-bottom: 16px;">
+              If you initiated this change, no further action is required. If you did not update your password, please verify your account and contact your administrator immediately.
+            </p>
+            <div style="border-top: 1px solid #1c202e; padding-top: 14px; font-size: 11px; color: #6b7280; text-align: center;">
+              © 2026 Student Sync | Security Team
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+        try:
+            queue_tracked_email(rollNo, recipient_email, "security", email_subject, email_body, notif_id=notif_id)
+        except Exception as q_err:
+            print(f"[SECURITY EMAIL] Error queueing password update email for {rollNo}: {q_err}")
+
+        return jsonify({"message": "Password updated successfully!", "rollNo": rollNo}), 200
+
+    except Exception as e:
+        print(f"Error updating password: {e}")
         return jsonify({"message": "Server error. Please try again later."}), 500
 
 
@@ -925,16 +1319,27 @@ def attendance_summary():
     except (ValueError, TypeError):
         target = 75.0
 
+    # Support manual refresh on demand from attendance dashboard
+    refresh = request.args.get('refresh', '').lower() == 'true'
+    if refresh and user.get('password'):
+        try:
+            updated_doc, err = sync_student_dual_portal(roll_no, user['password'])
+            if updated_doc:
+                user = updated_doc
+        except Exception as sync_err:
+            print(f"[ATTENDANCE REFRESH] Error: {sync_err}")
+
     studzone1 = user.get('studzone1', {})
-    parsed_attendance = studzone1.get('parsed_attendance', [])
+    parsed_attendance, is_previous_data, is_updating = resolve_student_attendance_records(user)
     class_schedule = studzone1.get('class_schedule', [])
+    class_timetable_html = studzone1.get('class_timetable_html', '')
 
     # 1. Calculate overall summary & subject breakdown (read-only, resolving student-specific course titles)
     summary = summarize_student_attendance(parsed_attendance, target=target, user_doc=user)
 
     # 2. Parse today's classroom lecture schedule matching day
     day_query = request.args.get('day')
-    today_schedule = parse_daily_schedule(class_schedule, day_name=day_query)
+    today_schedule = parse_daily_schedule(class_schedule, day_name=day_query, class_timetable_html=class_timetable_html)
 
     response_payload = {
         "rollNo": roll_no,
@@ -949,7 +1354,9 @@ def attendance_summary():
         "subjects": summary["subjects"],
         "counts": summary["counts"],
         "today_schedule": today_schedule,
-        "last_synced": user.get("last_synced_studzone1") or user.get("lastSyncedAt")
+        "last_synced": user.get("last_synced_studzone1") or user.get("lastSyncedAt"),
+        "is_previous_data": is_previous_data,
+        "is_updating": is_updating
     }
 
     return jsonify(response_payload), 200
@@ -998,7 +1405,7 @@ def attendance_simulate():
         return jsonify({"error": "Invalid numerical parameters."}), 400
 
     studzone1 = user.get('studzone1', {})
-    parsed_attendance = studzone1.get('parsed_attendance', [])
+    parsed_attendance, _, _ = resolve_student_attendance_records(user)
 
     matched_subj = None
     for subj in parsed_attendance:
@@ -1144,7 +1551,8 @@ def schedule_weekly():
 
     studzone1 = user.get('studzone1', {})
     class_schedule = studzone1.get('class_schedule', [])
-    parsed = parse_weekly_schedule_matrix(class_schedule)
+    class_timetable_html = studzone1.get('class_timetable_html', '')
+    parsed = parse_weekly_schedule_matrix(class_schedule, class_timetable_html=class_timetable_html)
     parsed["rollNo"] = user.get('rollNo')
     return jsonify(parsed), 200
 
@@ -1205,8 +1613,9 @@ def schedule_day_bunk_simulate():
         return jsonify({"error": "Invalid target percentage value."}), 400
 
     studzone1 = user.get('studzone1', {})
-    parsed_attendance = studzone1.get('parsed_attendance', [])
+    parsed_attendance, _, _ = resolve_student_attendance_records(user)
     class_schedule = studzone1.get('class_schedule', [])
+    class_timetable_html = studzone1.get('class_timetable_html', '')
 
     try:
         sim_result = simulate_day_bunks(
@@ -1214,7 +1623,8 @@ def schedule_day_bunk_simulate():
             class_schedule_matrix=class_schedule,
             day=day,
             periods=periods,
-            target=target
+            target=target,
+            class_timetable_html=class_timetable_html
         )
         return jsonify(sim_result), 200
     except ValueError as ve:
@@ -1276,8 +1686,262 @@ def campus_services_overview():
     if err:
         return jsonify({"error": err}), status_code
 
-    overview = synthesize_campus_services(user)
-    return jsonify(overview), 200
+    try:
+        from services_calculator import synthesize_campus_services
+    except ImportError:
+        from backend.services_calculator import synthesize_campus_services
+
+    return jsonify(synthesize_campus_services(user)), 200
+
+# =========================================================================
+# Standalone Hostel Subsystem API Endpoints (/api/v1/hostel)
+# =========================================================================
+try:
+    from hostel_service import hostel_service
+except ImportError:
+    try:
+        from backend.hostel_service import hostel_service
+    except ImportError:
+        hostel_service = None
+
+
+@app.route('/api/v1/hostel/student/<rollno>', methods=['GET'])
+@app.route('/api/hostel/student/<rollno>', methods=['GET'])
+@app.route('/v1/hostel/student/<rollno>', methods=['GET'])
+@app.route('/hostel/student/<rollno>', methods=['GET'])
+@app.route('/api/v1/hostel/student/<rollno>/summary', methods=['GET'])
+@app.route('/api/hostel/student/<rollno>/summary', methods=['GET'])
+@app.route('/v1/hostel/student/<rollno>/summary', methods=['GET'])
+@app.route('/hostel/student/<rollno>/summary', methods=['GET'])
+def hostel_student_summary(rollno):
+    """
+    Returns complete normalized hostel records for an authenticated resident.
+    Enforces student isolation: Student A cannot view Student B's hostel data.
+    """
+    user, status_code, err = get_authenticated_student(request)
+    if err:
+        return jsonify({"success": False, "error": err}), status_code
+
+    auth_roll = (user.get('rollNo') or '').strip().upper()
+    req_roll = rollno.strip().upper()
+    if auth_roll != req_roll:
+        return jsonify({
+            "success": False,
+            "error": "Forbidden: You are not authorized to view another student's hostel records."
+        }), 403
+
+    if not hostel_service:
+        return jsonify({"success": False, "error": "Hostel service not available."}), 503
+
+    refresh = request.args.get('refresh', '').lower() == 'true'
+    res, status, err_msg = hostel_service.get_student_hostel_overview(
+        roll_number=req_roll,
+        force_refresh=refresh,
+        password=user.get('password')
+    )
+    if err_msg:
+        return jsonify({"success": False, "error": err_msg}), status
+    return jsonify(res), 200
+
+
+@app.route('/api/v1/hostel/student/<rollno>/room', methods=['GET'])
+@app.route('/api/hostel/student/<rollno>/room', methods=['GET'])
+@app.route('/v1/hostel/student/<rollno>/room', methods=['GET'])
+@app.route('/hostel/student/<rollno>/room', methods=['GET'])
+def hostel_student_room(rollno):
+    """Returns room allocation and warden oversight for authenticated resident."""
+    user, status_code, err = get_authenticated_student(request)
+    if err:
+        return jsonify({"success": False, "error": err}), status_code
+
+    auth_roll = (user.get('rollNo') or '').strip().upper()
+    req_roll = rollno.strip().upper()
+    if auth_roll != req_roll:
+        return jsonify({
+            "success": False,
+            "error": "Forbidden: You are not authorized to view another student's hostel records."
+        }), 403
+
+    if not hostel_service:
+        return jsonify({"success": False, "error": "Hostel service not available."}), 503
+
+    refresh = request.args.get('refresh', '').lower() == 'true'
+    res, status, err_msg = hostel_service.get_student_room(
+        roll_number=req_roll,
+        force_refresh=refresh,
+        password=user.get('password')
+    )
+    if err_msg:
+        return jsonify({"success": False, "error": err_msg}), status
+    return jsonify(res), 200
+
+
+@app.route('/api/v1/hostel/student/<rollno>/mess', methods=['GET'])
+@app.route('/api/hostel/student/<rollno>/mess', methods=['GET'])
+@app.route('/v1/hostel/student/<rollno>/mess', methods=['GET'])
+@app.route('/hostel/student/<rollno>/mess', methods=['GET'])
+def hostel_student_mess(rollno):
+    """Returns mess subscription and token authorizations for authenticated resident."""
+    user, status_code, err = get_authenticated_student(request)
+    if err:
+        return jsonify({"success": False, "error": err}), status_code
+
+    auth_roll = (user.get('rollNo') or '').strip().upper()
+    req_roll = rollno.strip().upper()
+    if auth_roll != req_roll:
+        return jsonify({
+            "success": False,
+            "error": "Forbidden: You are not authorized to view another student's hostel records."
+        }), 403
+
+    if not hostel_service:
+        return jsonify({"success": False, "error": "Hostel service not available."}), 503
+
+    refresh = request.args.get('refresh', '').lower() == 'true'
+    res, status, err_msg = hostel_service.get_student_mess(
+        roll_number=req_roll,
+        force_refresh=refresh,
+        password=user.get('password')
+    )
+    if err_msg:
+        return jsonify({"success": False, "error": err_msg}), status
+    return jsonify(res), 200
+
+
+@app.route('/api/v1/hostel/student/<rollno>/fees', methods=['GET'])
+@app.route('/api/hostel/student/<rollno>/fees', methods=['GET'])
+@app.route('/v1/hostel/student/<rollno>/fees', methods=['GET'])
+@app.route('/hostel/student/<rollno>/fees', methods=['GET'])
+def hostel_student_fees(rollno):
+    """Returns hostel fee balance, deposits, and pending dues for authenticated resident."""
+    user, status_code, err = get_authenticated_student(request)
+    if err:
+        return jsonify({"success": False, "error": err}), status_code
+
+    auth_roll = (user.get('rollNo') or '').strip().upper()
+    req_roll = rollno.strip().upper()
+    if auth_roll != req_roll:
+        return jsonify({
+            "success": False,
+            "error": "Forbidden: You are not authorized to view another student's hostel records."
+        }), 403
+
+    if not hostel_service:
+        return jsonify({"success": False, "error": "Hostel service not available."}), 503
+
+    refresh = request.args.get('refresh', '').lower() == 'true'
+    res, status, err_msg = hostel_service.get_student_fees(
+        roll_number=req_roll,
+        force_refresh=refresh,
+        password=user.get('password')
+    )
+    if err_msg:
+        return jsonify({"success": False, "error": err_msg}), status
+    return jsonify(res), 200
+
+
+@app.route('/api/v1/hostel/student/<rollno>/leave', methods=['GET'])
+@app.route('/api/hostel/student/<rollno>/leave', methods=['GET'])
+@app.route('/v1/hostel/student/<rollno>/leave', methods=['GET'])
+@app.route('/hostel/student/<rollno>/leave', methods=['GET'])
+def hostel_student_leave(rollno):
+    """Returns leave quotas, designated approvers, and application history for authenticated resident."""
+    user, status_code, err = get_authenticated_student(request)
+    if err:
+        return jsonify({"success": False, "error": err}), status_code
+
+    auth_roll = (user.get('rollNo') or '').strip().upper()
+    req_roll = rollno.strip().upper()
+    if auth_roll != req_roll:
+        return jsonify({
+            "success": False,
+            "error": "Forbidden: You are not authorized to view another student's hostel records."
+        }), 403
+
+    if not hostel_service:
+        return jsonify({"success": False, "error": "Hostel service not available."}), 503
+
+    refresh = request.args.get('refresh', '').lower() == 'true'
+    res, status, err_msg = hostel_service.get_student_leave(
+        roll_number=req_roll,
+        force_refresh=refresh,
+        password=user.get('password')
+    )
+    if err_msg:
+        return jsonify({"success": False, "error": err_msg}), status
+    return jsonify(res), 200
+
+
+@app.route('/api/v1/hostel/overview', methods=['GET'])
+@app.route('/api/hostel/overview', methods=['GET'])
+@app.route('/v1/hostel/overview', methods=['GET'])
+@app.route('/hostel/overview', methods=['GET'])
+def hostel_authenticated_overview():
+    """Convenience endpoint returning the authenticated student's own hostel records."""
+    user, status_code, err = get_authenticated_student(request)
+    if err:
+        return jsonify({"success": False, "error": err}), status_code
+
+    auth_roll = (user.get('rollNo') or '').strip().upper()
+    if not hostel_service:
+        return jsonify({"success": False, "error": "Hostel service not available."}), 503
+
+    refresh = request.args.get('refresh', '').lower() == 'true'
+    res, status, err_msg = hostel_service.get_student_hostel_overview(
+        roll_number=auth_roll,
+        force_refresh=refresh,
+        password=user.get('password')
+    )
+    if err_msg:
+        return jsonify({"success": False, "error": err_msg}), status
+    return jsonify(res), 200
+
+
+
+# =========================================================================
+# Chatbot & Interactive Academic Navigator Engine
+# =========================================================================
+try:
+    from chatbot import process_chatbot_query
+except ImportError:
+    from backend.chatbot import process_chatbot_query
+
+@app.route('/api/chat', methods=['POST'])
+@app.route('/api/chatbot', methods=['POST'])
+def chatbot_endpoint():
+    """
+    Intelligent Assistant & Page Navigator for Student Sync.
+    Accepts student query, resolves intent, retrieves live/stored student academic details,
+    calculates bunks and percentages, and provides direct page navigation deep-links.
+    """
+    if not request.is_json:
+        return jsonify({"error": "Malformed request. JSON body required."}), 400
+
+    data = request.get_json() or {}
+    message = str(data.get('message') or data.get('query') or '').strip()
+    if not message:
+        return jsonify({"error": "Message cannot be empty."}), 400
+
+    # Extract roll number from auth session or request payload
+    roll_no = None
+    user, status_code, err = get_authenticated_student(request)
+    if user:
+        roll_no = user.get('rollNo')
+    else:
+        # Fallback to rollNo in body or X-Roll-No header
+        roll_no = data.get('rollNo') or request.headers.get('X-Roll-No')
+
+    if not roll_no:
+        return jsonify({
+            "reply": "Hi! Please log in with your PSG Tech roll number so I can fetch your personalized attendance, marks, and timetable. How can I help you navigate?",
+            "intent": "unauthenticated",
+            "navigation": {"path": "/login", "label": "Go to Login Page →"},
+            "suggestions": ["Take me to Login", "How do I register?", "What is Student Sync?"]
+        }), 200
+
+    history = data.get('history', [])
+    response = process_chatbot_query(message, roll_no, conversation_history=history)
+    return jsonify(response), 200
 
 
 if __name__ == "__main__":

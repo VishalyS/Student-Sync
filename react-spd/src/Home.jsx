@@ -73,7 +73,7 @@ const Home = () => {
               to="/login" 
               className="w-full sm:w-auto inline-flex items-center justify-center px-6 py-3 rounded-lg bg-[#151924] hover:bg-[#1d2232] border border-[#272d3e] text-gray-300 hover:text-white font-medium text-sm transition-all"
             >
-              Sign In to Account
+              Login to Account
             </Link>
           </div>
         </div>
@@ -120,7 +120,7 @@ const Home = () => {
             </div>
             <h3 className="text-base font-semibold text-white mb-1.5">Attendance Alerts</h3>
             <p className="text-xs text-gray-400 leading-relaxed">
-              Course-wise percentage tracking to stay ahead of requirements.
+              Subject-wise percentage tracking to stay ahead of requirements.
             </p>
           </div>
 
@@ -140,7 +140,7 @@ const Home = () => {
             </div>
             <h3 className="text-base font-semibold text-white mb-1.5">Timetable Updates</h3>
             <p className="text-xs text-gray-400 leading-relaxed">
-              Test schedules, dates, and course session slots in one schedule view.
+              Test schedules, dates, and subject session slots in one schedule view.
             </p>
           </div>
 

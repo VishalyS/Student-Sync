@@ -92,8 +92,13 @@ const AttendanceOverview = ({ summary, target, onTargetChange, onScrollToSimulat
           <div className="lg:col-span-7 space-y-4">
             <div className="flex flex-wrap items-center gap-2.5">
               <span className="text-xs uppercase tracking-wider font-semibold text-gray-400">
-                Official Consolidated Attendance
+                {summary?.is_previous_data ? "Consolidated Attendance (Stored Baseline)" : "Official Consolidated Attendance"}
               </span>
+              {summary?.is_previous_data && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border bg-amber-500/10 border-amber-500/20 text-amber-300">
+                  Live Updating
+                </span>
+              )}
               <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${statusStyle.badge}`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${statusStyle.dot}`} />
                 {overallStatus}

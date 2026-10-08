@@ -32,9 +32,11 @@ scratch/edge_*
 scratch/**/Crashpad/
 scratch/**/Default/
 
-# Logs
+# Logs and runtime locks
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+*.synchronizer.lock
+.synchronizer.lock

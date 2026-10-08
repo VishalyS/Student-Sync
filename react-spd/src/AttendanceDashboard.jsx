@@ -88,7 +88,7 @@ const AttendanceDashboard = () => {
       }
 
       // Fetch from API with target threshold parameter
-      const apiUrl = `http://127.0.0.1:5000/api/attendance/summary?target=${currentTarget}`;
+      const apiUrl = `http://127.0.0.1:5000/api/attendance/summary?target=${currentTarget}${isManualRefresh ? '&refresh=true' : ''}`;
       const response = await fetch(apiUrl, { headers });
 
       if (response.status === 200) {
@@ -227,7 +227,7 @@ const AttendanceDashboard = () => {
                 onClick={() => navigate('/login')}
                 className="w-full py-2.5 px-4 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-semibold text-xs transition-colors shadow-md shadow-purple-600/20"
               >
-                Sign In to Student Sync
+                Login to Student Sync
               </button>
             ) : (
               <button
@@ -283,6 +283,7 @@ const AttendanceDashboard = () => {
   const studentName = summaryData?.name || currentUser?.name || summaryData?.rollNo || 'Student';
   const rollNo = summaryData?.rollNo || currentUser?.rollNo || '';
   const lastSynced = summaryData?.last_synced || null;
+  const isPreviousData = summaryData?.is_previous_data || false;
 
   return (
     <div className="min-h-screen bg-[#0b0d13] text-[#f3f4f6] pt-20 pb-20 px-4 sm:px-6 lg:px-8 overflow-x-hidden">
@@ -332,6 +333,33 @@ const AttendanceDashboard = () => {
           </div>
         </div>
 
+        {/* Informative notice when live portal attendance is updating */}
+        {isPreviousData && (
+          <div className="bg-amber-500/10 border border-amber-500/25 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-amber-200">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 flex-shrink-0">
+                <FiRefreshCw className="animate-spin text-sm" />
+              </div>
+              <div className="space-y-0.5">
+                <div className="text-xs font-bold text-amber-300 flex items-center gap-2">
+                  <span>Current Attendance is Updating</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono font-semibold">
+                    Saved Baseline
+                  </span>
+                </div>
+                <p className="text-[11px] text-amber-200/80">
+                  PSG StudZone is currently publishing updated attendance. Displaying your previously recorded attendance data from the database.
+                </p>
+              </div>
+            </div>
+            {lastSynced && (
+              <span className="text-[10px] text-amber-300/70 font-mono whitespace-nowrap self-start sm:self-auto">
+                Last Recorded: {formatLastSynced(lastSynced)}
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Section A: OVERALL ATTENDANCE CARD */}
         <AttendanceOverview
           summary={summaryData}
@@ -352,11 +380,11 @@ const AttendanceDashboard = () => {
             <div>
               <h2 className="text-lg font-bold text-white">Subject-wise Attendance</h2>
               <p className="text-xs text-gray-400">
-                Detailed metrics for all enrolled courses • Target: <strong className="text-white font-mono">{target}%</strong>
+                Detailed metrics for all enrolled subjects • Target: <strong className="text-white font-mono">{target}%</strong>
               </p>
             </div>
             <span className="text-xs text-gray-500 font-mono self-start sm:self-auto">
-              {subjects.length} Enrolled Courses
+              {subjects.length} Enrolled Subjects
             </span>
           </div>
 

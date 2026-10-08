@@ -239,8 +239,9 @@ class EmailSender:
                 server.starttls()
                 server.login(sender_email, password)
                 
-                msg = MIMEText(body, 'html')
-                msg['Subject'] = subject
+                from email.header import Header
+                msg = MIMEText(body, 'html', 'utf-8')
+                msg['Subject'] = Header(subject, 'utf-8')
                 msg['From'] = sender_email
                 msg['To'] = recipient_email
                 

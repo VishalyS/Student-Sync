@@ -324,7 +324,7 @@ const DayBunkSimulator = ({ weeklySchedule, onSimulateRemote, authToken, rollNo 
               <div className="p-3.5 rounded-lg bg-[#171b28] border border-[#24293c]">
                 <div className="text-[10px] text-gray-400 uppercase font-semibold">Affected Subjects</div>
                 <div className="text-2xl font-extrabold text-white mt-1">
-                  {simResult.affected_subjects_count} Courses
+                  {simResult.affected_subjects_count} Subjects
                 </div>
                 <div className="text-[11px] text-gray-400 mt-0.5">
                   Scheduled in selected periods
@@ -343,7 +343,7 @@ const DayBunkSimulator = ({ weeklySchedule, onSimulateRemote, authToken, rollNo 
               <table className="w-full min-w-[650px] text-xs text-left border-collapse">
                 <thead>
                   <tr className="border-b border-[#232738] text-gray-400 text-[10px] uppercase font-semibold">
-                    <th className="py-2.5 px-3">Course</th>
+                    <th className="py-2.5 px-3">Subject</th>
                     <th className="py-2.5 px-3 text-center">Missed Today</th>
                     <th className="py-2.5 px-3 text-center">Current</th>
                     <th className="py-2.5 px-3 text-center">Projected</th>

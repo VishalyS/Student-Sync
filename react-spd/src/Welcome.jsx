@@ -11,7 +11,9 @@ import {
   FiMapPin, 
   FiAward, 
   FiCheckCircle, 
-  FiAlertCircle 
+  FiAlertCircle,
+  FiMail,
+  FiRefreshCw
 } from 'react-icons/fi';
 
 const Welcome = () => {
@@ -34,6 +36,8 @@ const Welcome = () => {
   });
   const [saveStatus, setSaveStatus] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resendingWelcome, setResendingWelcome] = useState(false);
+  const [welcomeStatus, setWelcomeStatus] = useState(null);
 
   useEffect(() => {
     if (!profile.rollNo) {
@@ -140,6 +144,41 @@ const Welcome = () => {
   const handleLogout = () => {
     localStorage.removeItem('student_sync_user');
     navigate('/', { replace: true });
+  };
+
+  const handleResendWelcome = async () => {
+    if (!profile.rollNo) return;
+    setResendingWelcome(true);
+    setWelcomeStatus(null);
+    try {
+      const response = await fetch('http://127.0.0.1:5000/api/resend-welcome', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rollNo: profile.rollNo,
+          email: profile.email
+        })
+      });
+      const data = await response.json();
+      if (response.ok) {
+        setWelcomeStatus({
+          type: 'success',
+          text: `Welcome mail sent to ${data.email || profile.email}!`
+        });
+      } else {
+        setWelcomeStatus({
+          type: 'error',
+          text: data.error || 'Failed to send welcome email.'
+        });
+      }
+    } catch (err) {
+      setWelcomeStatus({
+        type: 'error',
+        text: 'Network error connecting to mail server.'
+      });
+    } finally {
+      setResendingWelcome(false);
+    }
   };
 
   const fullName = profile.name && profile.name !== profile.rollNo 
@@ -250,13 +289,40 @@ const Welcome = () => {
               </div>
             </div>
 
+            <div className="space-y-2 pt-3 border-t border-[#1c202e] text-xs">
+              <div className="flex justify-between items-center text-gray-400">
+                <span className="flex items-center gap-1">
+                  <FiMail className="text-xs text-purple-400" />
+                  Alert Email
+                </span>
+                <span className="text-emerald-400 text-[10px]">Verified</span>
+              </div>
+              <div className="font-mono text-[11px] text-white bg-[#0b0d13] p-2 rounded border border-[#272c3d] break-all">
+                {profile.email || (profile.rollNo ? `${profile.rollNo.toLowerCase()}@psgtech.ac.in` : 'Email')}
+              </div>
+              <button
+                type="button"
+                onClick={handleResendWelcome}
+                disabled={resendingWelcome}
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 text-xs font-medium text-purple-300 hover:text-white transition-colors disabled:opacity-50"
+              >
+                <FiRefreshCw className={`text-xs ${resendingWelcome ? 'animate-spin' : ''}`} />
+                <span>{resendingWelcome ? 'Dispatching...' : 'Resend Welcome Email'}</span>
+              </button>
+              {welcomeStatus && (
+                <p className={`text-[11px] mt-1 text-center ${welcomeStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {welcomeStatus.text}
+                </p>
+              )}
+            </div>
+
             <div className="pt-2">
               <button
                 onClick={handleLogout}
                 className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-xs font-medium text-red-400 transition-colors"
               >
                 <FiLogOut className="text-xs" />
-                <span>Sign Out</span>
+                <span>Logout</span>
               </button>
             </div>
           </div>

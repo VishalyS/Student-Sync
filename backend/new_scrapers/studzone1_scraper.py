@@ -77,18 +77,16 @@ def is_valid_course_code(code: str) -> bool:
     return bool(re.match(r'^[0-9]{2}[A-Z]{2}[A-Z0-9]{2,4}$|^TWM$', c))
 
 
-def scrape_studzone1_attendance(session, sub_collection=None, course_name_map=None):
+def parse_attendance_html(html_content, course_name_map=None):
     """
-    Scrapes attendance percentage table from /StudZone/Attendance/StudentPercentage.
-    Maps course codes strictly using the authenticated student's own course_name_map.
-    Never uses global hardcoded mappings or cross-student shared caches.
+    Parses raw attendance table HTML into (cleaned_html, parsed_courses).
+    Works on live HTTP response content or stored database HTML.
+    Returns ("", []) if table is missing or has no data rows.
     """
+    if not html_content:
+        return "", []
     try:
-        resp = session.get(f"{BASE_URL}/StudZone/Attendance/StudentPercentage", timeout=15, verify=False)
-        if not resp.ok:
-            return "", []
-        
-        soup = BeautifulSoup(resp.content, "html.parser")
+        soup = BeautifulSoup(html_content, "html.parser")
         table = soup.find('table', id="example") or soup.find('table')
         if not table:
             return "", []
@@ -133,6 +131,9 @@ def scrape_studzone1_attendance(session, sub_collection=None, course_name_map=No
                 continue
 
             course_code = cells[col_map['code']].strip().upper()
+            if not course_code:
+                continue
+
             tot_hr = cells[col_map['total_hr']]
             exempt_hr = cells[col_map['exempt_hr']]
             tot_absent = cells[col_map['absent']]
@@ -150,7 +151,7 @@ def scrape_studzone1_attendance(session, sub_collection=None, course_name_map=No
             
             # Neutral fallback if not found in student's own CA marks or timetable
             if not subj_name:
-                subj_name = f"Course {course_code}"
+                subj_name = f"Subject {course_code}"
 
             course = {
                 "code": course_code,
@@ -166,6 +167,22 @@ def scrape_studzone1_attendance(session, sub_collection=None, course_name_map=No
             parsed_courses.append(course)
 
         return clean_html_table(table), parsed_courses
+    except Exception as e:
+        print(f"Error parsing attendance HTML: {e}")
+        return "", []
+
+
+def scrape_studzone1_attendance(session, sub_collection=None, course_name_map=None):
+    """
+    Scrapes attendance percentage table from /StudZone/Attendance/StudentPercentage.
+    Maps course codes strictly using the authenticated student's own course_name_map.
+    Never uses global hardcoded mappings or cross-student shared caches.
+    """
+    try:
+        resp = session.get(f"{BASE_URL}/StudZone/Attendance/StudentPercentage", timeout=15, verify=False)
+        if not resp.ok:
+            return "", []
+        return parse_attendance_html(resp.content, course_name_map=course_name_map)
     except Exception as e:
         print(f"Error scraping StudZone1 attendance: {e}")
         return "", []
@@ -234,10 +251,19 @@ def scrape_studzone1_class_timetable(session):
         if not table:
             return "", []
 
-        # Parse schedule rows
+        # Parse schedule rows, expanding colspan for multi-period slots (e.g. laboratory sessions)
         schedule_rows = []
         for row in table.find_all('tr'):
-            cells = [td.text.strip() for td in row.find_all(['th', 'td'])]
+            cells = []
+            for td in row.find_all(['th', 'td']):
+                colspan_str = td.get('colspan')
+                try:
+                    colspan = max(1, int(colspan_str)) if colspan_str else 1
+                except (ValueError, TypeError):
+                    colspan = 1
+                cell_text = td.text.strip()
+                for _ in range(colspan):
+                    cells.append(cell_text)
             if cells:
                 schedule_rows.append(cells)
 

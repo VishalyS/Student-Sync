@@ -117,7 +117,7 @@ const WeeklyTimetableGrid = ({ weeklySchedule, unifiedCourses = [] }) => {
               )}
             </h3>
             <span className="text-xs text-gray-400 font-mono">
-              {activeDaySchedule.scheduled_classes} classes • {activeDaySchedule.free_periods} free slots
+              {activeDaySchedule.scheduled_classes} {activeDaySchedule.scheduled_classes === 1 ? 'class' : 'classes'} • {activeDaySchedule.free_periods === 0 ? 'No free slots' : `${activeDaySchedule.free_periods} free ${activeDaySchedule.free_periods === 1 ? 'slot' : 'slots'}`}
             </span>
           </div>
 

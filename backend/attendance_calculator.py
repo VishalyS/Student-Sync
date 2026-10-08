@@ -194,9 +194,10 @@ def calculate_simulated_attendance(attended, conducted, additional_attended=0, a
     }
 
 
-def parse_daily_schedule(class_schedule_matrix, day_name=None):
+def parse_daily_schedule(class_schedule_matrix, day_name=None, class_timetable_html=None):
     """
     Parses the 2D timetable matrix stored in user['studzone1']['class_schedule'].
+    If class_timetable_html is provided, re-extracts the matrix with precise colspan handling.
 
     Structure in StudZone 1:
         Row 0: ["Period", "1", "2", "3", "4", "5", "6"]
@@ -206,6 +207,7 @@ def parse_daily_schedule(class_schedule_matrix, day_name=None):
     Args:
         class_schedule_matrix (list): 2D array of rows from StudZone 1.
         day_name (str, optional): Target day (e.g. 'Monday'). Defaults to today's weekday.
+        class_timetable_html (str, optional): StudZone 1 timetable HTML table with colspan.
 
     Returns:
         dict: {
@@ -223,6 +225,15 @@ def parse_daily_schedule(class_schedule_matrix, day_name=None):
             ]
         }
     """
+    if class_timetable_html:
+        try:
+            from timetable_calculator import parse_schedule_html_to_matrix
+            html_matrix = parse_schedule_html_to_matrix(class_timetable_html)
+            if html_matrix:
+                class_schedule_matrix = html_matrix
+        except Exception:
+            pass
+
     if not class_schedule_matrix or not isinstance(class_schedule_matrix, list) or len(class_schedule_matrix) < 3:
         return {"day": day_name or datetime.now().strftime("%A"), "classes": []}
 
@@ -253,6 +264,12 @@ def parse_daily_schedule(class_schedule_matrix, day_name=None):
 
     if not matched_row:
         return {"day": target_day, "classes": []}
+
+    try:
+        from timetable_calculator import normalize_schedule_row
+        matched_row = normalize_schedule_row(matched_row, total_periods=len(periods_row) - 1)
+    except Exception:
+        pass
 
     classes = []
     for col_idx in range(1, len(matched_row)):
@@ -345,10 +362,74 @@ def extract_student_course_titles(user_doc=None):
     return mapping
 
 
+def resolve_student_attendance_records(user_doc, target_col=None):
+    """
+    Safely resolves attendance records for a student document with resilient fallback:
+    1. Returns current parsed_attendance from studzone1 if available and non-empty.
+    2. If current attendance is empty/updating, falls back to previously stored data:
+       - previous_parsed_attendance in user_doc or studzone1
+       - parses stored HTML tables: attendance_table, previous_attendance, attendance, attendance_html
+    3. If neither current nor previous data is available, returns empty list.
+
+    Returns:
+        tuple: (records_list, is_previous_data, is_updating)
+    """
+    if not user_doc or not isinstance(user_doc, dict):
+        return [], False, False
+
+    sz1 = user_doc.get("studzone1") or {}
+    current_parsed = sz1.get("parsed_attendance") if isinstance(sz1, dict) else None
+
+    def has_valid_records(att_list):
+        if not att_list or not isinstance(att_list, list):
+            return False
+        for item in att_list:
+            if isinstance(item, dict) and item.get("code"):
+                return True
+        return False
+
+    # 1. Current data available?
+    if has_valid_records(current_parsed):
+        return current_parsed, False, False
+
+    # 2. Check explicitly stored previous_parsed_attendance
+    prev_parsed = user_doc.get("previous_parsed_attendance") or (sz1.get("previous_parsed_attendance") if isinstance(sz1, dict) else None)
+    if has_valid_records(prev_parsed):
+        return prev_parsed, True, True
+
+    # 3. Check and parse stored HTML tables in MongoDB
+    student_course_map = extract_student_course_titles(user_doc)
+    html_candidates = [
+        user_doc.get("attendance_table"),
+        user_doc.get("previous_attendance"),
+        user_doc.get("attendance"),
+        sz1.get("attendance_html") if isinstance(sz1, dict) else None
+    ]
+
+    try:
+        from new_scrapers.studzone1_scraper import parse_attendance_html
+    except ImportError:
+        try:
+            from backend.new_scrapers.studzone1_scraper import parse_attendance_html
+        except ImportError:
+            parse_attendance_html = None
+
+    if parse_attendance_html:
+        for html_candidate in html_candidates:
+            if html_candidate and isinstance(html_candidate, str) and "<td" in html_candidate:
+                _, parsed = parse_attendance_html(html_candidate, course_name_map=student_course_map)
+                if has_valid_records(parsed):
+                    return parsed, True, True
+
+    # 4. Neither current nor previous data is available in the database
+    return [], False, False
+
+
 def summarize_student_attendance(parsed_attendance_list, target=75.0, user_doc=None):
     """
     Generates a full, enriched attendance summary from a student's parsed_attendance list.
     Resolves course names from the student's own verified CA marks/timetable data when user_doc is provided.
+    If parsed_attendance_list is empty/updating and user_doc is provided, seamlessly recovers stored previous data.
     Operates in read-only mode without mutating the input list.
 
     Returns:
@@ -369,9 +450,19 @@ def summarize_student_attendance(parsed_attendance_list, target=75.0, user_doc=N
                 "warning_subjects": int,
                 "critical_subjects": int
             },
-            "target": float
+            "target": float,
+            "is_previous_data": bool,
+            "is_updating": bool
         }
     """
+    is_prev = False
+    is_upd = False
+
+    if (not parsed_attendance_list or not isinstance(parsed_attendance_list, list)) and user_doc:
+        resolved, is_prev, is_upd = resolve_student_attendance_records(user_doc)
+        if resolved:
+            parsed_attendance_list = resolved
+
     if not parsed_attendance_list or not isinstance(parsed_attendance_list, list):
         return {
             "overall": {
@@ -390,7 +481,9 @@ def summarize_student_attendance(parsed_attendance_list, target=75.0, user_doc=N
                 "warning_subjects": 0,
                 "critical_subjects": 0
             },
-            "target": target
+            "target": target,
+            "is_previous_data": False,
+            "is_updating": False
         }
 
     student_titles = extract_student_course_titles(user_doc) if user_doc else {}
@@ -481,5 +574,7 @@ def summarize_student_attendance(parsed_attendance_list, target=75.0, user_doc=N
             "warning_subjects": warn_count,
             "critical_subjects": crit_count
         },
-        "target": target
+        "target": target,
+        "is_previous_data": is_prev,
+        "is_updating": is_upd
     }

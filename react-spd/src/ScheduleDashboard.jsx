@@ -236,9 +236,9 @@ const ScheduleDashboard = () => {
               </div>
 
               <div className="p-4 rounded-xl bg-[#131620] border border-[#232738]">
-                <div className="text-[10px] text-gray-400 uppercase font-semibold">Registered Courses</div>
+                <div className="text-[10px] text-gray-400 uppercase font-semibold">Registered Subjects</div>
                 <div className="text-2xl font-extrabold text-purple-300 mt-1">
-                  {weeklySchedule.course_codes?.length || 8} Courses
+                  {weeklySchedule.course_codes?.length || 8} Subjects
                 </div>
                 <div className="text-[11px] text-gray-400 mt-0.5">StudZone 1 curriculum</div>
               </div>
@@ -305,7 +305,7 @@ const ScheduleDashboard = () => {
                 <FiCalendar size={14} className={activeTab === 'exams' ? 'text-purple-400' : ''} />
                 <span>End-Semester Examination Hub</span>
                 <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#181c2b] text-blue-300 font-mono">
-                  {totalExams} Courses
+                  {totalExams} Subjects
                 </span>
               </button>
 

@@ -90,13 +90,74 @@ def parse_cell_content(cell_str):
     }
 
 
-def parse_weekly_schedule_matrix(class_schedule_matrix):
+def parse_schedule_html_to_matrix(html_str):
+    """
+    Parses a StudZone 1 class timetable HTML table into a 2D matrix,
+    properly expanding colspan attributes so consecutive lab periods are preserved.
+    """
+    if not html_str or not isinstance(html_str, str):
+        return None
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_str, 'html.parser')
+        table = soup.find('table', class_=re.compile(r'timetable-table|table-bordered', re.I)) or soup.find('table')
+        if not table:
+            return None
+        rows = []
+        for tr in table.find_all('tr'):
+            cells = []
+            for td in tr.find_all(['th', 'td']):
+                colspan_str = td.get('colspan')
+                try:
+                    colspan = max(1, int(colspan_str)) if colspan_str else 1
+                except (ValueError, TypeError):
+                    colspan = 1
+                txt = td.text.strip()
+                for _ in range(colspan):
+                    cells.append(txt)
+            if cells:
+                rows.append(cells)
+        return rows if len(rows) >= 3 else None
+    except Exception:
+        return None
+
+
+def normalize_schedule_row(row, total_periods=6):
+    """
+    Ensures consecutive laboratory sessions (e.g. 2-period labs like 23MX36 / 23MX37)
+    occupy consecutive period slots if a row was parsed without colspan expansion.
+    """
+    if not row or not isinstance(row, list) or len(row) >= total_periods + 1:
+        return row
+    if len(row) == total_periods:
+        new_row = [row[0]]
+        expanded = False
+        for cell in row[1:]:
+            new_row.append(cell)
+            if not expanded:
+                cell_upper = str(cell).upper()
+                if ("LABORATORY" in cell_upper or " LAB\n" in cell_upper or "MINI PROJECT" in cell_upper or
+                        "23MX36" in cell_upper or "23MX37" in cell_upper):
+                    new_row.append(cell)
+                    expanded = True
+        if len(new_row) == total_periods + 1:
+            return new_row
+    return row
+
+
+def parse_weekly_schedule_matrix(class_schedule_matrix, class_timetable_html=None):
     """
     Parses the 7-row class_schedule 2D matrix from StudZone 1:
         Row 0: Header row (['Period', '1', '2', '3', '4', '5', '6'])
         Row 1: Time row (['Time', '8.30 - 9.20', ...])
         Rows 2-6: Weekday rows (Monday to Friday)
+    If class_timetable_html is provided, re-extracts the matrix with precise colspan handling.
     """
+    if class_timetable_html:
+        html_matrix = parse_schedule_html_to_matrix(class_timetable_html)
+        if html_matrix:
+            class_schedule_matrix = html_matrix
+
     if not class_schedule_matrix or not isinstance(class_schedule_matrix, list) or len(class_schedule_matrix) < 2:
         return {
             "days": [],
@@ -119,9 +180,10 @@ def parse_weekly_schedule_matrix(class_schedule_matrix):
     days_data = []
     all_codes = set()
 
-    for row in class_schedule_matrix[2:]:
-        if not row or not isinstance(row, list) or len(row) == 0:
+    for raw_row in class_schedule_matrix[2:]:
+        if not raw_row or not isinstance(raw_row, list) or len(raw_row) == 0:
             continue
+        row = normalize_schedule_row(raw_row, total_periods=len(timing_slots))
         day_raw = str(row[0]).strip().capitalize()
         # Match against valid days
         matched_day = None
@@ -250,7 +312,7 @@ def parse_circulars(circulars_list):
     return parsed
 
 
-def simulate_day_bunks(parsed_attendance_list, class_schedule_matrix, day, periods=None, target=75.0):
+def simulate_day_bunks(parsed_attendance_list, class_schedule_matrix, day, periods=None, target=75.0, class_timetable_html=None):
     """
     Interactive In-Memory Day-Bunk Simulator:
     Evaluates attendance shifts if a student bunks selected class periods on a given weekday.
@@ -261,11 +323,12 @@ def simulate_day_bunks(parsed_attendance_list, class_schedule_matrix, day, perio
         day (str): Weekday name (e.g. 'Monday', 'Friday').
         periods (list of int, optional): Selected period numbers (1-6). Defaults to all scheduled classes on that day.
         target (float): Regulatory target percentage (default: 75.0).
+        class_timetable_html (str, optional): StudZone 1 timetable HTML with colspan attributes.
 
     Returns:
         dict: In-memory simulation response with subject-level and aggregate shifts.
     """
-    weekly = parse_weekly_schedule_matrix(class_schedule_matrix)
+    weekly = parse_weekly_schedule_matrix(class_schedule_matrix, class_timetable_html=class_timetable_html)
     target_day_name = str(day or "").strip().capitalize()
 
     # Find the requested day's periods

@@ -59,7 +59,7 @@ const CgpaSimulator = ({ baseCredits = 24.0, baseCgpa = 7.96, onSimulateRemote }
 
     const courseItem = {
       id: Date.now() + Math.random(),
-      course_name: newCourseName.trim() || `Course ${simulatedCourses.length + 1}`,
+      course_name: newCourseName.trim() || `Subject ${simulatedCourses.length + 1}`,
       credits: cr,
       grade: newCourseGrade,
       grade_point: gp,
@@ -121,7 +121,7 @@ const CgpaSimulator = ({ baseCredits = 24.0, baseCgpa = 7.96, onSimulateRemote }
               </span>
             </div>
             <p className="text-xs text-gray-400 mt-0.5">
-              Simulate upcoming course grades to explore potential changes to your cumulative GPA
+              Simulate upcoming subject grades to explore potential changes to your cumulative GPA
             </p>
           </div>
 
@@ -174,7 +174,7 @@ const CgpaSimulator = ({ baseCredits = 24.0, baseCgpa = 7.96, onSimulateRemote }
               +{simCreditsTot}
             </div>
             <div className="text-[11px] text-gray-400 mt-1">
-              {simulatedCourses.length} simulated courses
+              {simulatedCourses.length} simulated subjects
             </div>
           </div>
 
@@ -200,11 +200,11 @@ const CgpaSimulator = ({ baseCredits = 24.0, baseCgpa = 7.96, onSimulateRemote }
         </div>
       </div>
 
-      {/* Add Course Form & Preset Buttons */}
+      {/* Add Subject Form & Preset Buttons */}
       <div className="p-5 rounded-xl bg-[#131620] border border-[#232738] shadow-sm space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-[#1c202e]">
           <div>
-            <h3 className="text-sm font-semibold text-white">Add Course to Simulation</h3>
+            <h3 className="text-sm font-semibold text-white">Add Subject to Simulation</h3>
             <p className="text-xs text-gray-400">Specify hypothetical credits and grade target</p>
           </div>
           <button
@@ -219,10 +219,10 @@ const CgpaSimulator = ({ baseCredits = 24.0, baseCgpa = 7.96, onSimulateRemote }
 
         <form onSubmit={handleAddCourse} className="space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-            {/* Course Title */}
+            {/* Subject Title */}
             <div className="sm:col-span-5">
               <label className="block text-[11px] font-medium text-gray-400 mb-1">
-                Course Title / Code (Optional)
+                Subject Title / Code (Optional)
               </label>
               <input
                 type="text"
@@ -236,7 +236,7 @@ const CgpaSimulator = ({ baseCredits = 24.0, baseCgpa = 7.96, onSimulateRemote }
             {/* Explicit Credits Input */}
             <div className="sm:col-span-3">
               <label className="block text-[11px] font-medium text-gray-400 mb-1">
-                Course Credits <span className="text-purple-400">*</span>
+                Subject Credits <span className="text-purple-400">*</span>
               </label>
               <input
                 type="number"
@@ -283,19 +283,19 @@ const CgpaSimulator = ({ baseCredits = 24.0, baseCgpa = 7.96, onSimulateRemote }
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-lg shadow-purple-500/20 transition-all"
             >
               <FiPlus size={14} />
-              <span>Add Course to Simulation</span>
+              <span>Add Subject to Simulation</span>
             </button>
           </div>
         </form>
       </div>
 
-      {/* Simulated Courses Table */}
+      {/* Simulated Subjects Table */}
       {simulatedCourses.length > 0 && (
         <div className="p-5 rounded-xl bg-[#131620] border border-[#232738] shadow-sm space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-[#1c202e]">
-            <h3 className="text-sm font-semibold text-white">Simulated Course Basket</h3>
+            <h3 className="text-sm font-semibold text-white">Simulated Subject Basket</h3>
             <span className="text-xs font-mono text-purple-300">
-              {simulatedCourses.length} Courses • {simCreditsTot} Credits
+              {simulatedCourses.length} Subjects • {simCreditsTot} Credits
             </span>
           </div>
 
@@ -304,7 +304,7 @@ const CgpaSimulator = ({ baseCredits = 24.0, baseCgpa = 7.96, onSimulateRemote }
               <thead>
                 <tr className="border-b border-[#1f2436] text-[11px] uppercase tracking-wider text-gray-400 font-semibold bg-[#10121a]">
                   <th className="py-2.5 px-3">#</th>
-                  <th className="py-2.5 px-3">Course Name</th>
+                  <th className="py-2.5 px-3">Subject Name</th>
                   <th className="py-2.5 px-3 text-center">Credits</th>
                   <th className="py-2.5 px-3 text-center">Grade</th>
                   <th className="py-2.5 px-3 text-center">Grade Point</th>
@@ -329,7 +329,7 @@ const CgpaSimulator = ({ baseCredits = 24.0, baseCgpa = 7.96, onSimulateRemote }
                       <button
                         onClick={() => handleRemoveCourse(c.id)}
                         className="p-1.5 rounded-md hover:bg-rose-500/15 text-gray-400 hover:text-rose-400 transition-colors"
-                        title="Remove course"
+                        title="Remove subject"
                       >
                         <FiTrash2 size={13} />
                       </button>

@@ -186,7 +186,9 @@ const Dashboard = () => {
   const sz1 = studentData?.studzone1 || {};
   const sz2 = studentData?.studzone2 || {};
 
-  const attendanceCourses = sz1?.parsed_attendance || [];
+  const attendanceCourses = (sz1?.parsed_attendance && sz1.parsed_attendance.length > 0)
+    ? sz1.parsed_attendance
+    : (studentData?.previous_parsed_attendance || []);
   const caMarksSubjects = sz1?.parsed_marks || [];
   const resultsCourses = sz2?.parsed_results || [];
   const timetableSlots = sz2?.parsed_timetable || [];
@@ -529,7 +531,7 @@ const Dashboard = () => {
                         </div>
                         <div className="my-2">
                           <div className="text-2xl font-bold text-white">
-                            {attendanceCourses.length ? `${attendanceCourses.length} Courses` : 'Recorded'}
+                            {attendanceCourses.length ? `${attendanceCourses.length} Subjects` : 'Recorded'}
                           </div>
                         </div>
                         <div className="text-[11px] text-gray-400 flex items-center justify-between pt-2 border-t border-[#1c202e]">
@@ -573,7 +575,7 @@ const Dashboard = () => {
                         </div>
                         <div className="my-2">
                           <div className="text-2xl font-bold text-white">
-                            {resultsCourses.length ? `${resultsCourses.length} Courses` : 'Published'}
+                            {resultsCourses.length ? `${resultsCourses.length} Subjects` : 'Published'}
                           </div>
                         </div>
                         <div className="text-[11px] text-gray-400 flex items-center justify-between pt-2 border-t border-[#1c202e]">
@@ -608,24 +610,6 @@ const Dashboard = () => {
 
                     {/* Schedule & Examination Cross-Links */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {/* Academic Planner Primary Cross-Link */}
-                      <div className="p-4 rounded-xl bg-gradient-to-r from-purple-900/20 via-[#131620] to-[#131620] border border-purple-500/30 hover:border-purple-500/50 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 col-span-1 md:col-span-2">
-                        <div className="flex items-center gap-3">
-                          <div className="w-9 h-9 rounded-lg bg-purple-500/20 border border-purple-500/30 flex items-center justify-center text-purple-400 shrink-0">
-                            <FiCompass size={18} />
-                          </div>
-                          <div>
-                            <div className="text-xs font-semibold text-white">Personalized Academic Study Planner</div>
-                            <div className="text-[11px] text-gray-400">Daily focus priorities, subject risk matrix, and interactive weekly study goal allocator</div>
-                          </div>
-                        </div>
-                        <Link 
-                          to="/planner"
-                          className="text-xs text-purple-300 hover:text-white font-medium inline-flex items-center gap-1 transition-colors px-3 py-1.5 rounded-lg bg-purple-600/30 hover:bg-purple-600/50 border border-purple-500/40 shrink-0 self-start sm:self-auto"
-                        >
-                          <span>Open Academic Planner →</span>
-                        </Link>
-                      </div>
 
                       {/* Campus Services & Student Dossier Primary Cross-Link */}
                       <div className="p-4 rounded-xl bg-gradient-to-r from-cyan-950/30 via-[#131620] to-[#131620] border border-cyan-500/30 hover:border-cyan-500/50 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 col-span-1 md:col-span-2">
@@ -716,7 +700,7 @@ const Dashboard = () => {
                               onClick={() => setActiveTab('results')}
                               className="w-full text-center text-xs text-purple-400 hover:text-purple-300 pt-1 font-medium"
                             >
-                              View all {resultsCourses.length} course results →
+                              View all {resultsCourses.length} subject results →
                             </button>
                           </div>
                         ) : studentData?.result_table ? (
@@ -933,11 +917,17 @@ const Dashboard = () => {
                     <div className="bg-[#131620] border border-[#232738] rounded-xl p-6 space-y-5 shadow-sm">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-[#1c202e]">
                         <div>
-                          <h2 className="text-base font-semibold text-white">Course Attendance</h2>
+                          <h2 className="text-base font-semibold text-white">Subject Attendance</h2>
                           <p className="text-xs text-gray-400 mt-0.5">Subject-wise attended classes, total sessions, and percentage</p>
                         </div>
-                        <span className="self-start sm:self-auto text-xs px-2.5 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono">
-                          Source: Modern StudZone 1
+                        <span className={`self-start sm:self-auto text-xs px-2.5 py-1 rounded-md font-mono ${
+                          (studentData?.is_previous_attendance || (!sz1?.parsed_attendance?.length && attendanceCourses.length > 0))
+                            ? 'bg-amber-500/10 border border-amber-500/20 text-amber-300'
+                            : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
+                        }`}>
+                          {(studentData?.is_previous_attendance || (!sz1?.parsed_attendance?.length && attendanceCourses.length > 0))
+                            ? 'Source: Stored Baseline (Portal Updating)'
+                            : 'Source: Modern StudZone 1'}
                         </span>
                       </div>
 
@@ -1076,7 +1066,7 @@ const Dashboard = () => {
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-[#1c202e]">
                         <div>
                           <h2 className="text-base font-semibold text-white">Semester Examination Results</h2>
-                          <p className="text-xs text-gray-400 mt-0.5">Official course grades, credit points, and calculated CGPA</p>
+                          <p className="text-xs text-gray-400 mt-0.5">Official subject grades, credit points, and calculated CGPA</p>
                         </div>
                         <span className="self-start sm:self-auto text-xs px-2.5 py-1 rounded-md bg-purple-500/10 border border-purple-500/20 text-purple-400 font-mono">
                           Source: StudZone 2
@@ -1087,7 +1077,7 @@ const Dashboard = () => {
                       <div className="flex items-center justify-between p-4 rounded-xl bg-[#171b28] border border-[#24293c]">
                         <div>
                           <div className="text-xs text-gray-400 font-medium">Cumulative Grade Point Average (CGPA)</div>
-                          <div className="text-xs text-gray-500 mt-0.5">Calculated across verified graded courses</div>
+                          <div className="text-xs text-gray-500 mt-0.5">Calculated across verified graded subjects</div>
                         </div>
                         <div className="text-3xl font-extrabold text-white">
                           {studentData?.cgpa ? studentData.cgpa : 'N/A'}
@@ -1100,8 +1090,8 @@ const Dashboard = () => {
                             <thead>
                               <tr>
                                 <th>Semester</th>
-                                <th>Course Code</th>
-                                <th>Course Title</th>
+                                <th>Subject Code</th>
+                                <th>Subject Title</th>
                                 <th>Credits</th>
                                 <th>Grade</th>
                                 <th>Grade Point</th>
@@ -1164,9 +1154,9 @@ const Dashboard = () => {
                         </div>
 
                         <div className="p-5 rounded-xl bg-[#171b28] border border-[#24293c] space-y-2">
-                          <div className="text-xs text-gray-400">Graded Courses</div>
+                          <div className="text-xs text-gray-400">Graded Subjects</div>
                           <div className="text-3xl font-extrabold text-white">{resultsCourses.length || 8}</div>
-                          <div className="text-[11px] text-gray-400">All courses successfully cleared</div>
+                          <div className="text-[11px] text-gray-400">All subjects successfully cleared</div>
                         </div>
 
                         <div className="p-5 rounded-xl bg-[#171b28] border border-[#24293c] space-y-2">
@@ -1201,7 +1191,7 @@ const Dashboard = () => {
                             <span>Official End-Semester Examination Hub</span>
                           </div>
                           <p className="text-[11px] text-gray-400">
-                            View verified end-semester course exam dates, session timings, and official CoE circular PDFs.
+                            View verified end-semester subject exam dates, session timings, and official CoE circular PDFs.
                           </p>
                         </div>
 
@@ -1450,7 +1440,7 @@ const Dashboard = () => {
                     <div className="bg-[#131620] border border-[#232738] rounded-xl p-6 space-y-5 shadow-sm">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-[#1c202e]">
                         <div>
-                          <h2 className="text-base font-semibold text-white">Course & Faculty Feedback</h2>
+                          <h2 className="text-base font-semibold text-white">Subject & Faculty Feedback</h2>
                           <p className="text-xs text-gray-400 mt-0.5">End-semester and intermediate faculty feedback schedules</p>
                         </div>
                         <span className="self-start sm:self-auto text-xs px-2.5 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono">

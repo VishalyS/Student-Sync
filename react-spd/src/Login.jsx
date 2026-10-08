@@ -54,7 +54,7 @@ const Login = () => {
         
         {/* Header */}
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold tracking-tight text-white">Sign In</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-white">Login</h1>
           <p className="text-sm text-gray-400 mt-1">Access your Student Sync academic dashboard</p>
         </div>
 
@@ -120,7 +120,7 @@ const Login = () => {
               ) : (
                 <>
                   <FiLogIn className="text-sm" />
-                  <span>Sign In</span>
+                  <span>Login</span>
                 </>
               )}
             </button>
@@ -129,7 +129,7 @@ const Login = () => {
           <div className="mt-6 pt-6 border-t border-[#1f2333] text-center text-xs text-gray-400">
             Don't have an account?{' '}
             <Link to="/register" className="text-purple-400 hover:text-purple-300 font-medium">
-              Create an account
+              Register
             </Link>
           </div>
         </div>

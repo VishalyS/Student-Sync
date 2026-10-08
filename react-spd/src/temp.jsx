@@ -5,6 +5,7 @@ import { FiUserPlus, FiEye, FiEyeOff, FiAlertCircle, FiInfo } from 'react-icons/
 const Registration = () => {
   const [rollNo, setRollNo] = useState('');
   const [password, setPassword] = useState('');
+  const [email, setEmail] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -32,21 +33,35 @@ const Registration = () => {
       }
       abortControllerRef.current = new AbortController();
       
+      const payload = {
+        rollNo: rollNo.trim().toUpperCase(),
+        password: password.trim()
+      };
+      if (email.trim()) {
+        payload.email = email.trim();
+      }
+
       const response = await fetch('http://127.0.0.1:5000/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rollNo, password }),
+        body: JSON.stringify(payload),
         signal: abortControllerRef.current.signal,
       });
 
       const data = await response.json();
 
       if (response.status === 200 || response.status === 201) {
-        navigate('/thank-you');
+        const confirmedEmail = data.email || (email.trim() || `${rollNo.trim().toLowerCase()}@psgtech.ac.in`);
+        navigate('/thank-you', {
+          state: {
+            rollNo: rollNo.trim().toUpperCase(),
+            email: confirmedEmail
+          }
+        });
       } else if (response.status === 401) {
         setError('Invalid credentials. Please check your roll number and StudZone password.');
       } else if (response.status === 409) {
-        setError('This roll number is already registered. Please sign in instead.');
+        setError(data.detail || data.message || 'Already registered. Please Login.');
       } else {
         setError(data.message || 'Registration failed. Please check your information and try again.');
       }
@@ -123,6 +138,26 @@ const Registration = () => {
               </div>
             </div>
 
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label htmlFor="email" className="block text-xs font-medium text-gray-300">
+                  Notification Email <span className="text-gray-500 font-normal">(Optional)</span>
+                </label>
+              </div>
+              <input
+                type="email"
+                id="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="e.g. personal Gmail or college email"
+                className="w-full px-3.5 py-2.5 bg-[#0b0d13] border border-[#272c3d] rounded-lg text-sm text-white placeholder:text-gray-600 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-colors"
+                disabled={loading}
+              />
+              <p className="text-[11px] text-gray-500 mt-1">
+                Your welcome email and portal change alerts will be sent here. Defaults to {rollNo ? `${rollNo.toLowerCase()}@psgtech.ac.in` : 'your college email'}.
+              </p>
+            </div>
+
             <div className="p-3 rounded-lg bg-[#181c2b] border border-[#262c3e] text-xs text-gray-400 flex items-start gap-2">
               <FiInfo className="text-purple-400 text-sm flex-shrink-0 mt-0.5" />
               <span>Use your regular student StudZone password. Student Sync will automatically sync your academic record.</span>
@@ -147,7 +182,7 @@ const Registration = () => {
           <div className="mt-6 pt-6 border-t border-[#1f2333] text-center text-xs text-gray-400">
             Already have an account?{' '}
             <Link to="/login" className="text-purple-400 hover:text-purple-300 font-medium">
-              Sign In
+              Login
             </Link>
           </div>
         </div>

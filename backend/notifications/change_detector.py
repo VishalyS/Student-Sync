@@ -151,7 +151,17 @@ def detect_granular_changes(roll_no, old_user_doc, sz1_fresh, sz2_fresh):
     # =========================================================================
     # 1. ATTENDANCE CHANGE DETECTION (StudZone 1)
     # =========================================================================
-    old_att_list = old_sz1.get('parsed_attendance') or []
+    old_att_list = old_sz1.get('parsed_attendance') or old_user.get('previous_parsed_attendance') or []
+    if not old_att_list and old_user:
+        try:
+            from attendance_calculator import resolve_student_attendance_records
+            old_att_list, _, _ = resolve_student_attendance_records(old_user)
+        except Exception:
+            try:
+                from backend.attendance_calculator import resolve_student_attendance_records
+                old_att_list, _, _ = resolve_student_attendance_records(old_user)
+            except Exception:
+                pass
     new_att_list = sz1_fresh.get('parsed_attendance') or []
 
     if old_att_list and new_att_list:
@@ -220,7 +230,9 @@ def detect_granular_changes(roll_no, old_user_doc, sz1_fresh, sz2_fresh):
                                 "code": new_c.get('code', ''),
                                 "previousValue": old_pct_str,
                                 "newValue": new_pct_str,
-                                "direction": "increased"
+                                "direction": "increased",
+                                "attended": new_c.get('attended'),
+                                "total": new_c.get('total_classes')
                             }
                         })
                     elif new_pct_val < old_pct_val:
@@ -246,7 +258,9 @@ def detect_granular_changes(roll_no, old_user_doc, sz1_fresh, sz2_fresh):
                                 "code": new_c.get('code', ''),
                                 "previousValue": old_pct_str,
                                 "newValue": new_pct_str,
-                                "direction": "decreased"
+                                "direction": "decreased",
+                                "attended": new_c.get('attended'),
+                                "total": new_c.get('total_classes')
                             }
                         })
                 elif old_pct_str != new_pct_str and new_pct_str:
@@ -271,7 +285,9 @@ def detect_granular_changes(roll_no, old_user_doc, sz1_fresh, sz2_fresh):
                             "subject": subj_name,
                             "code": new_c.get('code', ''),
                             "previousValue": old_pct_str,
-                            "newValue": new_pct_str
+                            "newValue": new_pct_str,
+                            "attended": new_c.get('attended'),
+                            "total": new_c.get('total_classes')
                         }
                     })
 

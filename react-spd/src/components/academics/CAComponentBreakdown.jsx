@@ -15,7 +15,7 @@ const CAComponentBreakdown = ({ courses = [] }) => {
   if (!courses || courses.length === 0) {
     return (
       <div className="py-16 text-center text-xs text-gray-500 rounded-xl bg-[#131620] border border-[#232738]">
-        No continuous assessment marks found for active semester courses.
+        No continuous assessment marks found for active semester subjects.
       </div>
     );
   }
@@ -45,7 +45,7 @@ const CAComponentBreakdown = ({ courses = [] }) => {
       <div className="flex flex-wrap items-center justify-between gap-3 pb-1">
         <div className="flex items-center gap-2">
           <FiFilter size={14} className="text-gray-400" />
-          <span className="text-xs font-medium text-gray-300">Course Categories:</span>
+          <span className="text-xs font-medium text-gray-300">Subject Categories:</span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {categories.map(cat => {
@@ -192,7 +192,7 @@ const CAComponentBreakdown = ({ courses = [] }) => {
                   {course.category === 'Theory' && 'Theory continuous evaluation includes periodical tests (T1/T2), tutorials, and assignments scaled to 40.'}
                   {course.category === 'Laboratory' && 'Laboratory continuous evaluation includes weekly experiments, observation, and internal lab tests scaled to 60.'}
                   {course.category === 'Project' && 'Project continuous evaluation covers periodic guide and committee reviews with viva-voce.'}
-                  {course.category === 'Mandatory/Audit' && 'Audit/Mandatory course evaluations are assessed continuously on a 100-mark internal scale.'}
+                  {course.category === 'Mandatory/Audit' && 'Audit/Mandatory subject evaluations are assessed continuously on a 100-mark internal scale.'}
                 </span>
                 <span className="font-mono text-[10px] text-gray-500">
                   StudZone 1 Sync

@@ -45,7 +45,7 @@ def run_controlled_notification_test():
 
     # 2. Select an existing attendance subject (e.g., CLOUD COMPUTING)
     sz1 = user_doc.get('studzone1', {})
-    att_list = sz1.get('parsed_attendance', [])
+    att_list = sz1.get('parsed_attendance') or user_doc.get('previous_parsed_attendance') or []
     if not att_list:
         print("[FAIL] No attendance records found for 25MX232 in MongoDB.")
         return False
@@ -73,6 +73,7 @@ def run_controlled_notification_test():
 
     # 3. Construct the simulated scraped dataset in memory (ZERO modification to MongoDB)
     sz1_fresh = copy.deepcopy(sz1)
+    sz1_fresh['parsed_attendance'] = copy.deepcopy(att_list)
     for c in sz1_fresh.get('parsed_attendance', []):
         if c.get('code') == subj_code or c.get('name') == subj_name:
             c['percentage'] = sim_pct_str

@@ -13,8 +13,8 @@ import UpdatePassword from './UpdatePassword';
 import AttendanceDashboard from './AttendanceDashboard';
 import AcademicPlannerDashboard from './AcademicPlannerDashboard';
 import ScheduleDashboard from './ScheduleDashboard';
-import PersonalizedPlannerDashboard from './PersonalizedPlannerDashboard';
 import CampusServicesDashboard from './CampusServicesDashboard';
+import ChatbotWidget from './components/chatbot/ChatbotWidget';
 
 function App() {
   return (
@@ -30,7 +30,7 @@ function App() {
         <Route path="/attendance" element={<AttendanceDashboard />} />
         <Route path="/grades" element={<AcademicPlannerDashboard />} />
         <Route path="/schedule" element={<ScheduleDashboard />} />
-        <Route path="/planner" element={<PersonalizedPlannerDashboard />} />
+        <Route path="/planner" element={<Navigate to="/dashboard" replace />} />
         <Route path="/services" element={<CampusServicesDashboard />} />
         <Route path="/welcome" element={<Welcome />} />
         <Route path="/about" element={<About />} />
@@ -38,6 +38,7 @@ function App() {
         <Route path="/update/:rollNo" element={<UpdatePassword />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <ChatbotWidget />
     </Router>
   );
 }

@@ -30,7 +30,7 @@ const FeedbackCycleAlert = ({ feedback }) => {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <h3 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
-              <FiMessageSquare className="text-blue-400" /> Institutional Course Feedback
+              <FiMessageSquare className="text-blue-400" /> Institutional Subject Feedback
             </h3>
             <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
               active_count > 0 
@@ -41,7 +41,7 @@ const FeedbackCycleAlert = ({ feedback }) => {
             </span>
           </div>
           <p className="text-sm text-gray-400">
-            Mandatory institutional curriculum, teacher evaluation, and course feedback monitoring.
+            Mandatory institutional curriculum, teacher evaluation, and subject feedback monitoring.
           </p>
         </div>
 
@@ -69,7 +69,7 @@ const FeedbackCycleAlert = ({ feedback }) => {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-sm font-bold text-gray-200">
-                      {cycle.type || 'Course Feedback'}
+                      {cycle.type || 'Subject Feedback'}
                     </span>
                     <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-mono font-medium border ${
                       cycle.is_active

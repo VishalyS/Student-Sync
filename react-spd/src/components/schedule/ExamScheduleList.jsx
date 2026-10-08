@@ -53,7 +53,7 @@ const ExamScheduleList = ({ examsData }) => {
         {/* Quick Numbers */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="p-4 rounded-xl bg-[#171b28] border border-[#24293c]">
-            <div className="text-[10px] text-gray-400 uppercase font-semibold">Total Examination Courses</div>
+            <div className="text-[10px] text-gray-400 uppercase font-semibold">Total Examination Subjects</div>
             <div className="text-2xl font-extrabold text-white mt-1">{total_exams}</div>
             <div className="text-[11px] text-gray-400 mt-0.5">Autonomous Semester Session</div>
           </div>

@@ -34,7 +34,9 @@ try:
     from backend.scrapers.studzone2_scraper import scrape_studzone2_all
     from backend.new_scrapers.send_mail import queue_tracked_email
     from backend.notifications.change_detector import detect_granular_changes, process_normalized_event
+    from backend.notifications.email_formatter import build_notification_email
     from backend.notifications.recovery import recover_stale_notifications
+    from backend.attendance_calculator import resolve_student_attendance_records
 except ImportError:
     from new_scrapers.login import login as modern_login
     from scrapers.login import login_student_studzone2 as legacy_login
@@ -42,7 +44,9 @@ except ImportError:
     from scrapers.studzone2_scraper import scrape_studzone2_all
     from new_scrapers.send_mail import queue_tracked_email
     from notifications.change_detector import detect_granular_changes, process_normalized_event
+    from notifications.email_formatter import build_notification_email
     from notifications.recovery import recover_stale_notifications
+    from attendance_calculator import resolve_student_attendance_records
 
 MONGO_URI = os.getenv('MONGO_URI')
 DB_NAME = os.getenv('DB_NAME', 'ecampus')
@@ -132,34 +136,7 @@ def process_detected_changes(roll_no, old_user, sz1_fresh, sz2_fresh, db):
 
         # Send specific email ONLY after successful atomic insertion
         try:
-            subj = notif['changeData'].get('subject')
-            if subj:
-                email_subject = f"Student Sync — {notif.get('title')} ({subj})"
-            else:
-                email_subject = f"Student Sync — {notif.get('title')}"
-
-            email_body = f"""
-            <!DOCTYPE html>
-            <html>
-            <body style="margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0b0d13; color: #f3f4f6;">
-              <div style="max-width: 520px; margin: 0 auto; background-color: #131620; border: 1px solid #232738; border-radius: 12px; padding: 24px;">
-                <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #a78bfa; font-weight: 600; margin-bottom: 6px;">
-                  {notif.get('source')} • {notif.get('module')}
-                </div>
-                <h2 style="color: #ffffff; font-size: 18px; margin-top: 0; margin-bottom: 12px;">{notif.get('title')}</h2>
-                <p style="color: #e5e7eb; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
-                  {notif.get('message')}
-                </p>
-                <div style="padding: 12px; border-radius: 8px; background-color: #181c2b; border: 1px solid #222738; font-size: 12px; color: #9ca3af; margin-bottom: 20px;">
-                  Student: <strong style="color: #ffffff;">{student_name}</strong> (<span style="font-family: monospace; color: #c4b5fd;">{roll_no}</span>)
-                </div>
-                <div style="border-top: 1px solid #1c202e; padding-top: 14px; font-size: 11px; color: #6b7280; text-align: center;">
-                  © 2026 Student Sync | PSG College of Technology
-                </div>
-              </div>
-            </body>
-            </html>
-            """
+            email_subject, email_body = build_notification_email(notif, student_name, roll_no, recipient_email)
             queue_tracked_email(roll_no, recipient_email, ntype, email_subject, email_body, notif_id=notif_id)
         except Exception as queue_err:
             logger.error(f"Error queueing email for {roll_no}: {queue_err}")
@@ -253,34 +230,7 @@ def dispatch_normalized_notification(roll_no, user, event_data, db=None):
         return None
 
     try:
-        subj = notif['changeData'].get('subject') if isinstance(notif.get('changeData'), dict) else None
-        if subj:
-            email_subject = f"Student Sync — {notif.get('title')} ({subj})"
-        else:
-            email_subject = f"Student Sync — {notif.get('title')}"
-
-        email_body = f"""
-        <!DOCTYPE html>
-        <html>
-        <body style="margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0b0d13; color: #f3f4f6;">
-          <div style="max-width: 520px; margin: 0 auto; background-color: #131620; border: 1px solid #232738; border-radius: 12px; padding: 24px;">
-            <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #a78bfa; font-weight: 600; margin-bottom: 6px;">
-              {notif.get('source')} • {notif.get('module')}
-            </div>
-            <h2 style="color: #ffffff; font-size: 18px; margin-top: 0; margin-bottom: 12px;">{notif.get('title')}</h2>
-            <p style="color: #e5e7eb; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
-              {notif.get('message')}
-            </p>
-            <div style="padding: 12px; border-radius: 8px; background-color: #181c2b; border: 1px solid #222738; font-size: 12px; color: #9ca3af; margin-bottom: 20px;">
-              Student: <strong style="color: #ffffff;">{student_name}</strong> (<span style="font-family: monospace; color: #c4b5fd;">{roll_no}</span>)
-            </div>
-            <div style="border-top: 1px solid #1c202e; padding-top: 14px; font-size: 11px; color: #6b7280; text-align: center;">
-              © 2026 Student Sync | PSG College of Technology
-            </div>
-          </div>
-        </body>
-        </html>
-        """
+        email_subject, email_body = build_notification_email(notif, student_name, roll_no, recipient_email)
         queue_tracked_email(roll_no, recipient_email, ntype, email_subject, email_body, notif_id=notif_id)
         return notif_id
     except Exception as queue_err:
@@ -365,13 +315,31 @@ def sync_single_user(user, db):
                 if not sz1_fresh.get(parsed_key) and old_sz1.get(parsed_key):
                     sz1_fresh[parsed_key] = old_sz1[parsed_key]
 
+            if not sz1_fresh.get("parsed_attendance"):
+                prev_att, _, _ = resolve_student_attendance_records(user)
+                if prev_att:
+                    sz1_fresh["parsed_attendance"] = prev_att
+                    sz1_fresh["is_previous_attendance"] = True
+
+            if sz1_fresh.get("parsed_attendance"):
+                update_fields["previous_parsed_attendance"] = sz1_fresh.get("parsed_attendance")
+
             update_fields["studzone1"] = sz1_fresh
             if sz1_fresh.get("parsed_attendance"):
                 logger.info(f"Attendance parsed for {roll_no}: {len(sz1_fresh.get('parsed_attendance'))} courses")
             else:
                 logger.warning(f"Scraper returned no attendance for {roll_no}; keeping existing data")
-            # Update ancillary fields
-            update_fields["attendance"] = sz1_fresh.get("attendance_html") or user.get("attendance", "")
+            # Update attendance and attendance_table fields safely
+            fresh_att_html = sz1_fresh.get("attendance_html", "")
+            if fresh_att_html and "<td" in fresh_att_html:
+                update_fields["attendance"] = fresh_att_html
+                update_fields["attendance_table"] = fresh_att_html
+            else:
+                stored_prev_table = user.get("attendance_table") or user.get("attendance", "")
+                update_fields["attendance"] = stored_prev_table
+                update_fields["attendance_table"] = stored_prev_table
+                if not sz1_fresh.get("attendance_html") or "<td" not in sz1_fresh.get("attendance_html", ""):
+                    sz1_fresh["attendance_html"] = stored_prev_table
             update_fields["marks"] = sz1_fresh.get("ca_marks_html") or user.get("marks", "")
             update_fields["fees"] = sz1_fresh.get("fees_html") or user.get("fees", "")
             update_fields["hostel"] = sz1_fresh.get("hostel_html") or user.get("hostel", "")

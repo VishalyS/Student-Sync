@@ -85,7 +85,7 @@ const ResultsAnalytics = ({ resultsData }) => {
               {total_credits}
             </div>
             <div className="text-[11px] text-gray-400 mt-1">
-              {courses.length} courses completed
+              {courses.length} subjects completed
             </div>
           </div>
 
@@ -160,7 +160,7 @@ const ResultsAnalytics = ({ resultsData }) => {
               >
                 <div>
                   <div className="text-xs font-semibold text-white">Semester {sem.semester}</div>
-                  <div className="text-[11px] text-gray-400">{sem.courses_count} courses • {sem.credits} credits</div>
+                  <div className="text-[11px] text-gray-400">{sem.courses_count} subjects • {sem.credits} credits</div>
                 </div>
                 <div className="text-right">
                   <div className="text-sm font-bold text-purple-300 font-mono">SGPA: {sem.sgpa}</div>
@@ -176,11 +176,11 @@ const ResultsAnalytics = ({ resultsData }) => {
       <div className="p-5 rounded-xl bg-[#131620] border border-[#232738] shadow-sm space-y-4">
         <div className="flex items-center justify-between pb-3 border-b border-[#1c202e]">
           <div>
-            <h3 className="text-sm font-semibold text-white">Course Grade Records</h3>
-            <p className="text-xs text-gray-400">Detailed course grades and credit weights as published</p>
+            <h3 className="text-sm font-semibold text-white">Subject Grade Records</h3>
+            <p className="text-xs text-gray-400">Detailed subject grades and credit weights as published</p>
           </div>
           <span className="text-xs font-mono text-purple-400 bg-purple-500/10 px-2.5 py-0.5 rounded border border-purple-500/20">
-            {courses.length} Recorded Courses
+            {courses.length} Recorded Subjects
           </span>
         </div>
 
@@ -189,8 +189,8 @@ const ResultsAnalytics = ({ resultsData }) => {
             <thead>
               <tr className="border-b border-[#1f2436] text-[11px] uppercase tracking-wider text-gray-400 font-semibold bg-[#10121a]">
                 <th className="py-2.5 px-3">Sem</th>
-                <th className="py-2.5 px-3">Course Code</th>
-                <th className="py-2.5 px-3">Course Title</th>
+                <th className="py-2.5 px-3">Subject Code</th>
+                <th className="py-2.5 px-3">Subject Title</th>
                 <th className="py-2.5 px-3 text-center">Credits</th>
                 <th className="py-2.5 px-3 text-center">Grade</th>
                 <th className="py-2.5 px-3 text-center">Grade Point</th>

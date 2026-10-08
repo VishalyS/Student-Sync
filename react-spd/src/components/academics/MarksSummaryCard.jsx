@@ -44,10 +44,10 @@ const MarksSummaryCard = ({ caData, resultsData }) => {
           </div>
         </div>
 
-        {/* Metric 2: Registered Courses */}
+        {/* Metric 2: Registered Subjects */}
         <div className="p-4 rounded-xl bg-[#131620] border border-[#232738] shadow-sm flex flex-col justify-between">
           <div className="flex items-center justify-between text-xs text-gray-400">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400">Semester Courses</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400">Semester Subjects</span>
             <span className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400">
               <FiLayers size={14} />
             </span>
@@ -109,8 +109,8 @@ const MarksSummaryCard = ({ caData, resultsData }) => {
         <div className="text-xs text-gray-300 space-y-1">
           <span className="font-semibold text-white">PSG College of Technology Assessment Regulations: </span>
           <span>
-            Theory course internals contribute 40 marks (40% weightage) towards final grades, practical laboratories contribute 60 marks, 
-            and project/ethics courses are 100% continuous assessment. Under autonomous regulations, theory courses follow 
+            Theory subject internals contribute 40 marks (40% weightage) towards final grades, practical laboratories contribute 60 marks, 
+            and project/ethics subjects are 100% continuous assessment. Under autonomous regulations, theory subjects follow 
             <strong className="text-purple-300"> Relative Grading</strong> based on class cohort statistical parameters.
           </span>
         </div>
