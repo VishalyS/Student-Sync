@@ -331,14 +331,14 @@ def sync_single_user(user, db):
                 logger.warning(f"Scraper returned no attendance for {roll_no}; keeping existing data")
             # Update attendance and attendance_table fields safely
             fresh_att_html = sz1_fresh.get("attendance_html", "")
-            if fresh_att_html and "<td" in fresh_att_html:
+            if fresh_att_html and ("<td" in fresh_att_html or "<tr" in fresh_att_html or not fresh_att_html.strip().startswith("<")):
                 update_fields["attendance"] = fresh_att_html
                 update_fields["attendance_table"] = fresh_att_html
             else:
                 stored_prev_table = user.get("attendance_table") or user.get("attendance", "")
                 update_fields["attendance"] = stored_prev_table
                 update_fields["attendance_table"] = stored_prev_table
-                if not sz1_fresh.get("attendance_html") or "<td" not in sz1_fresh.get("attendance_html", ""):
+                if not sz1_fresh.get("attendance_html") or ("<td" not in sz1_fresh.get("attendance_html", "") and sz1_fresh.get("attendance_html", "").strip().startswith("<")):
                     sz1_fresh["attendance_html"] = stored_prev_table
             update_fields["marks"] = sz1_fresh.get("ca_marks_html") or user.get("marks", "")
             update_fields["fees"] = sz1_fresh.get("fees_html") or user.get("fees", "")
@@ -416,9 +416,19 @@ def acquire_instance_lock():
             try:
                 with open(LOCK_FILE, "r") as f:
                     old_pid = int(f.read().strip())
-                import subprocess
-                check = subprocess.run(f'tasklist /FI "PID eq {old_pid}"', capture_output=True, text=True, shell=True)
-                if str(old_pid) in check.stdout:
+                is_running = False
+                if sys.platform == 'win32':
+                    import subprocess
+                    check = subprocess.run(f'tasklist /FI "PID eq {old_pid}"', capture_output=True, text=True, shell=True)
+                    is_running = str(old_pid) in check.stdout
+                else:
+                    try:
+                        os.kill(old_pid, 0)
+                        is_running = True
+                    except (OSError, ProcessLookupError):
+                        is_running = False
+
+                if is_running:
                     logger.error(f"Single synchronizer guard: Another instance is already active (PID: {old_pid}). Exiting to prevent duplicate polling.")
                     return False
             except Exception:

@@ -90,14 +90,18 @@ const Dashboard = () => {
     setError('');
 
     try {
-      const profileUrl = isManualRefresh 
-        ? `http://127.0.0.1:5000/profile?rollNo=${userRollNo}&refresh=true` 
-        : `http://127.0.0.1:5000/profile?rollNo=${userRollNo}`;
+      const profileUrl = isManualRefresh
+        ? `/api/profile?rollNo=${userRollNo}&refresh=true`
+        : `/api/profile?rollNo=${userRollNo}`;
+
+      const storedUser = JSON.parse(localStorage.getItem('student_sync_user') || '{}');
+      const token = storedUser.auth_token;
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
 
       const [profileRes, statsRes, notifsRes] = await Promise.all([
-        fetch(profileUrl),
-        fetch(`http://127.0.0.1:5000/stats`),
-        fetch(`http://127.0.0.1:5000/notifications?rollNo=${userRollNo}`)
+        fetch(profileUrl, { headers }),
+        fetch(`/api/stats`),
+        fetch(`/api/notifications?rollNo=${userRollNo}`, { headers })
       ]);
 
       if (profileRes.status === 200) {
@@ -140,9 +144,12 @@ const Dashboard = () => {
 
   const handleMarkAsRead = async (notifId = null, markAll = false) => {
     try {
-      await fetch('http://127.0.0.1:5000/notifications/mark-read', {
+      const storedUser = JSON.parse(localStorage.getItem('student_sync_user') || '{}');
+      const token = storedUser.auth_token;
+      const headers = { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) };
+      await fetch('/api/notifications/mark-read', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ rollNo, notificationId: notifId, all: markAll })
       });
       if (markAll) {
@@ -176,15 +183,13 @@ const Dashboard = () => {
     : (studentData?.rollNo || 'Student');
 
   const getGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return 'Good morning';
-    if (hour < 18) return 'Good afternoon';
-    return 'Welcome back';
+    return 'Hello';
   };
 
   // Structured Data Shortcuts
   const sz1 = studentData?.studzone1 || {};
   const sz2 = studentData?.studzone2 || {};
+  const isHosteller = (studentData?.residential_status === 'HOSTELLER') || (studentData?.can_access_hostel === true);
 
   const attendanceCourses = (sz1?.parsed_attendance && sz1.parsed_attendance.length > 0)
     ? sz1.parsed_attendance
@@ -330,7 +335,7 @@ const Dashboard = () => {
       items: [
         { id: 'fees', label: 'Fees', icon: <FiDollarSign size={16} /> },
         { id: 'feedback', label: 'Feedback', icon: <FiMessageSquare size={16} /> },
-        { id: 'hostel', label: 'Hostel', icon: <FiHome size={16} /> },
+        ...(isHosteller ? [{ id: 'hostel', label: 'Hostel', icon: <FiHome size={16} /> }] : []),
         { id: 'scholarships', label: 'Scholarships', icon: <FiGift size={16} /> },
         { id: 'leave', label: 'Leave & OD', icon: <FiCalendar size={16} /> },
         { id: 'library', label: 'Library', icon: <FiBook size={16} /> }
@@ -345,31 +350,36 @@ const Dashboard = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-[#0b0d13] text-[#f3f4f6] pt-20 pb-16">
+    <div className="min-h-screen bg-[#0b0d13] text-[#f3f4f6] pt-16 pb-16">
       
-      {/* Top Header Strip */}
-      <div className="border-b border-[#1f2434] bg-[#0e111a]/90 backdrop-blur sticky top-16 z-30 px-4 sm:px-6 lg:px-8 py-3">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
+      {/* Top Header Strip / User Information & Status Area (Normal Document Flow) */}
+      <div className="border-b border-[#1f2434] bg-[#0e111a] px-4 sm:px-6 lg:px-8 py-3.5 shadow-sm">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4">
+          <div className="flex items-center gap-3 min-w-0">
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="lg:hidden p-2 rounded-lg bg-[#181c2b] border border-[#262c3e] text-gray-300 hover:text-white"
+              className="lg:hidden p-2 rounded-lg bg-[#181c2b] border border-[#262c3e] text-gray-300 hover:text-white flex-shrink-0"
+              aria-label="Toggle navigation drawer"
             >
               {mobileMenuOpen ? <FiX size={18} /> : <FiMenu size={18} />}
             </button>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400 font-medium">{getGreeting()},</span>
-                <span className="text-sm font-bold text-white">{fullName}</span>
-                {getPortalStatusBadge()}
+            <div className="min-w-0 space-y-0.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-gray-400 font-medium whitespace-nowrap">{getGreeting()},</span>
+                <span className="text-sm font-bold text-white tracking-tight truncate">{fullName}</span>
+                <div className="flex-shrink-0">
+                  {getPortalStatusBadge()}
+                </div>
               </div>
-              <div className="text-[11px] text-gray-400 font-mono">
-                {rollNo} • PSG College of Technology
+              <div className="text-[11px] text-gray-400 font-mono flex items-center gap-1.5 truncate">
+                <span>{rollNo}</span>
+                <span>•</span>
+                <span className="truncate">PSG College of Technology</span>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 self-start sm:self-auto flex-shrink-0">
             <button
               onClick={() => fetchStudentData(rollNo, true)}
               disabled={refreshing}
@@ -410,8 +420,8 @@ const Dashboard = () => {
           <aside className={`
             fixed lg:static inset-y-0 left-0 z-40 w-64 lg:w-60 flex-shrink-0
             bg-[#0e111a] lg:bg-transparent border-r lg:border-r-0 border-[#1f2434]
-            p-4 lg:p-0 overflow-y-auto transition-transform duration-200 ease-in-out
-            ${mobileMenuOpen ? 'translate-x-0 top-16 shadow-2xl' : '-translate-x-full lg:translate-x-0'}
+            p-4 lg:p-0 pt-20 lg:pt-0 overflow-y-auto transition-transform duration-200 ease-in-out
+            ${mobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full lg:translate-x-0'}
           `}>
             <div className="space-y-6">
               {navCategories.map((cat, cIdx) => (
@@ -1477,27 +1487,46 @@ const Dashboard = () => {
                     <div className="bg-[#131620] border border-[#232738] rounded-xl p-6 space-y-5 shadow-sm">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-[#1c202e]">
                         <div>
-                          <h2 className="text-base font-semibold text-white">Hostel Information & Fees</h2>
-                          <p className="text-xs text-gray-400 mt-0.5">Hostel allocation status, room number, and payment history</p>
+                          <h2 className="text-base font-semibold text-white">Hostel Allocation & Residency</h2>
+                          <p className="text-xs text-gray-400 mt-0.5">Verified resident allocation and portal services</p>
                         </div>
                         <span className="self-start sm:self-auto text-xs px-2.5 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono">
                           Source: Modern StudZone 1
                         </span>
                       </div>
 
-                      <div className="p-4 rounded-xl bg-[#171b28] border border-[#23283b] flex items-center justify-between">
-                        <div>
-                          <div className="text-xs text-gray-400">Hostel Allocation Status</div>
-                          <div className="text-sm font-bold text-white mt-1">{sz1?.hostel_status || 'Hostel details active'}</div>
-                        </div>
-                        <FiHome className="text-xl text-purple-400" />
-                      </div>
+                      {isHosteller ? (
+                        <div className="space-y-4">
+                          <div className="p-4 rounded-xl bg-gradient-to-r from-purple-950/30 to-[#171b28] border border-purple-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div className="space-y-1">
+                              <span className="text-[10px] uppercase font-bold text-cyan-400 tracking-wider">Active Campus Resident</span>
+                              <div className="text-base font-bold text-white">
+                                Room: <span className="font-mono text-cyan-300">{studentData?.room_number || 'Assigned'}</span>
+                              </div>
+                              <p className="text-xs text-gray-400">
+                                Access room oversight, dining hall menus, token accounts, fee ledgers, and leave passes.
+                              </p>
+                            </div>
+                            <Link
+                              to="/hostel"
+                              className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-md transition-all flex items-center gap-1.5 self-start sm:self-auto whitespace-nowrap"
+                            >
+                              <span>Open Hostel Portal</span>
+                              <FiArrowRight size={14} />
+                            </Link>
+                          </div>
 
-                      {sz1?.hostel_html ? (
-                        <div className="academic-table-container" dangerouslySetInnerHTML={{ __html: sz1.hostel_html }} />
+                          {sz1?.hostel_html && (
+                            <div className="academic-table-container" dangerouslySetInnerHTML={{ __html: sz1.hostel_html }} />
+                          )}
+                        </div>
                       ) : (
-                        <div className="py-8 text-center text-xs text-gray-500">
-                          Not available from the portal
+                        <div className="py-8 px-4 text-center rounded-xl bg-[#171b28] border border-[#23283b] space-y-2">
+                          <FiHome className="text-2xl text-gray-500 mx-auto" />
+                          <h4 className="text-sm font-semibold text-gray-300">Day Scholar Status</h4>
+                          <p className="text-xs text-gray-400 max-w-md mx-auto">
+                            You are officially recorded as a Day Scholar in the institutional registry. No hostel accommodation or mess services apply.
+                          </p>
                         </div>
                       )}
                     </div>

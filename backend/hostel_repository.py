@@ -104,6 +104,17 @@ class HostelMongoRepository:
             "updatedAt": now_iso,
         }
 
+        is_synthetic = bool(
+            extraction_result.run_id.startswith("run_test_")
+            or extraction_result.run_id.startswith("run_mock_")
+            or (extraction_result.student and str(extraction_result.student.get("name", "")).upper() == "TEST RESIDENT")
+            or getattr(extraction_result, "is_synthetic", False)
+        )
+        if is_synthetic:
+            doc["is_synthetic"] = True
+            doc["source"]["is_synthetic"] = True
+            doc["source"]["source"] = "Synthetic Test Fixture"
+
         col = self.db[self.COLLECTION_NAME]
         col.update_one(
             {"rollNo": roll_no},

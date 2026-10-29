@@ -54,13 +54,7 @@ const CampusServicesDashboard = () => {
       const token = encodeURIComponent(user.auth_token);
       const roll = encodeURIComponent(user.rollNo);
       
-      let res;
-      try {
-        res = await fetch(`/api/campus-services/overview?auth_token=${token}&rollNo=${roll}`);
-      } catch (networkErr) {
-        // Fallback directly to localhost:5000 if proxy failed
-        res = await fetch(`http://127.0.0.1:5000/api/campus-services/overview?auth_token=${token}&rollNo=${roll}`);
-      }
+      const res = await fetch(`/api/campus-services/overview?auth_token=${token}&rollNo=${roll}`);
 
       if (res.status === 401) {
         localStorage.removeItem('student_sync_user');

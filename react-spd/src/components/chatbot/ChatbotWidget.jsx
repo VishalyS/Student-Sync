@@ -91,7 +91,7 @@ const ChatbotWidget = () => {
     setInputMessage('');
     setIsTyping(true);
 
-    const rollNo = currentUser?.rollNo || '25MX232';
+    const rollNo = currentUser?.rollNo || '';
     const authToken = currentUser?.auth_token;
 
     try {
@@ -102,12 +102,12 @@ const ChatbotWidget = () => {
         headers['X-Roll-No'] = rollNo;
       }
 
-      const response = await fetch('http://127.0.0.1:5000/api/chat', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers,
         body: JSON.stringify({
           message: query,
-          rollNo: rollNo
+          rollNo: rollNo || undefined
         })
       });
 
@@ -140,7 +140,7 @@ const ChatbotWidget = () => {
         {
           id: `bot-${Date.now()}`,
           sender: 'bot',
-          text: "📡 Network connection to backend server failed. Make sure the server is running on port 5000.",
+          text: "📡 Network connection to backend server failed. Make sure the server is running.",
           suggestions: ["Retry query", "Take me to Login"]
         }
       ]);

@@ -18,7 +18,7 @@ const Home = () => {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:5000/stats');
+        const response = await fetch('/api/stats');
         if (response.ok) {
           const data = await response.json();
           setStats({

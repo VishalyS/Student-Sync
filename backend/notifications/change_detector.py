@@ -689,25 +689,38 @@ def detect_granular_changes(roll_no, old_user_doc, sz1_fresh, sz2_fresh):
     old_hostel = old_sz1.get('hostel_status')
     new_hostel = sz1_fresh.get('hostel_status')
     if old_sz1 and new_hostel and old_hostel and new_hostel != old_hostel:
-        title = "Hostel Allocation Updated"
-        desc = f"Hostel room allocation has been updated: {new_hostel}."
-        chash = compute_change_hash(roll_no, "hostel", "Hostel", title, desc, f"hostel_{new_hostel}")
-        notifications.append({
-            "rollNo": roll_no,
-            "studentRollNo": roll_no,
-            "category": "hostel",
-            "type": "hostel",
-            "title": title,
-            "description": desc,
-            "message": desc,
-            "source": "StudZone 1",
-            "module": "Hostel",
-            "timestamp": now_iso,
-            "createdAt": now_iso,
-            "read": False,
-            "changeHash": chash,
-            "changeData": {"previousStatus": old_hostel, "newStatus": new_hostel}
-        })
+        try:
+            from residential_service import determine_residential_status, STATUS_HOSTELLER
+        except ImportError:
+            from backend.residential_service import determine_residential_status, STATUS_HOSTELLER
+
+        merged_user = dict(old_user)
+        if sz1_fresh:
+            m_sz1 = dict(old_sz1)
+            m_sz1.update(sz1_fresh)
+            merged_user['studzone1'] = m_sz1
+
+        res_info = determine_residential_status(merged_user)
+        if res_info.get('status') == STATUS_HOSTELLER:
+            title = "Hostel Allocation Updated"
+            desc = f"Hostel room allocation has been updated: {new_hostel}."
+            chash = compute_change_hash(roll_no, "hostel", "Hostel", title, desc, f"hostel_{new_hostel}")
+            notifications.append({
+                "rollNo": roll_no,
+                "studentRollNo": roll_no,
+                "category": "hostel",
+                "type": "hostel",
+                "title": title,
+                "description": desc,
+                "message": desc,
+                "source": "StudZone 1",
+                "module": "Hostel",
+                "timestamp": now_iso,
+                "createdAt": now_iso,
+                "read": False,
+                "changeHash": chash,
+                "changeData": {"previousStatus": old_hostel, "newStatus": new_hostel}
+            })
 
     # =========================================================================
     # 8. SCHOLARSHIP UPDATE DETECTION (StudZone 1)
@@ -885,6 +898,23 @@ def process_normalized_event(roll_no, event_data, old_user_doc=None):
     source = event_data.get('source', 'Student Sync')
     module = event_data.get('module', category.capitalize())
     change_key = str(event_data.get('change_key', f"{category}_{title}")).strip()
+
+    # Residential status guard: Hostel events only allowed for verified HOSTELLER
+    is_hostel = (
+        'hostel' in str(category).lower() or
+        'hostel' in str(notif_type).lower() or
+        'hostel' in str(module).lower() or
+        'hostel' in str(source).lower()
+    )
+    if is_hostel:
+        try:
+            from residential_service import determine_residential_status, STATUS_HOSTELLER
+        except ImportError:
+            from backend.residential_service import determine_residential_status, STATUS_HOSTELLER
+
+        res_info = determine_residential_status(old_user_doc)
+        if res_info.get('status') != STATUS_HOSTELLER:
+            return None
 
     chash = compute_change_hash(roll_no, notif_type, module, title, msg, change_key)
 

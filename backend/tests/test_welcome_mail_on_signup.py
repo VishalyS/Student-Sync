@@ -125,7 +125,7 @@ class TestWelcomeMailOnSignup(unittest.TestCase):
                 "rollNo": self.test_roll_1,
                 "password": "MockPassword123"
             })
-            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.status_code, 409)
             self.assertTrue(res.get_json().get("already_registered"))
 
         # Verify only 1 welcome notification exists for TESTSIGNUP01

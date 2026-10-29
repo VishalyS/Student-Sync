@@ -26,7 +26,9 @@ dist-ssr/
 .DS_Store
 Thumbs.db
 
-# Browser automation & temporary test profiles
+# Browser automation & temporary test profiles / scratch files
+scratch/
+backend/scratch/
 scratch/edge_debug_profile/
 scratch/edge_*
 scratch/**/Crashpad/

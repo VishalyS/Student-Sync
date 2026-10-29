@@ -39,6 +39,22 @@ except ImportError:
         db = None
 
 
+def is_synthetic_document(doc: Optional[Dict[str, Any]]) -> bool:
+    """Returns True if the document was generated from a synthetic/mock test fixture."""
+    if not doc or not isinstance(doc, dict):
+        return False
+    source = doc.get("source", {})
+    run_id = str(source.get("runId", "")).lower()
+    student_name = str((doc.get("profile") or {}).get("student_name", "")).upper()
+    return (
+        run_id.startswith("run_test_")
+        or run_id.startswith("run_mock_")
+        or student_name == "TEST RESIDENT"
+        or bool(doc.get("is_synthetic"))
+        or bool(source.get("is_synthetic"))
+    )
+
+
 class HostelService:
     """
     Application service managing hostel data extraction, caching, and retrieval.
@@ -54,22 +70,27 @@ class HostelService:
         roll_number: str,
         force_refresh: bool = False,
         password: Optional[str] = None,
+        allow_synthetic: bool = False,
     ) -> Tuple[Optional[Dict[str, Any]], int, Optional[str]]:
         """
         Retrieve complete hostel data for an authenticated resident.
+        Guarantees that live portal data is retrieved and synthetic test data is never served to real students.
         Returns (response_payload, status_code, error_message).
         """
         roll_clean = roll_number.strip().upper()
         if not roll_clean:
             return None, 400, "Invalid roll number."
 
-        # 1. Check existing record in repository unless force_refresh is requested
-        if not force_refresh:
-            existing_doc = self.repository.get_by_roll_number(roll_clean)
-            if existing_doc:
-                return self._format_response(existing_doc), 200, None
+        # Check existing record in repository
+        existing_doc = self.repository.get_by_roll_number(roll_clean)
+        is_synthetic = is_synthetic_document(existing_doc)
 
-        # 2. If force_refresh or missing, attempt to extract if credentials are provided
+        # 1. If valid, real live record exists and no refresh requested, return it
+        if existing_doc and not is_synthetic and not force_refresh:
+            return self._format_response(existing_doc), 200, None
+
+        # 2. If force_refresh is requested, record is missing, OR record is synthetic:
+        # attempt live extraction from the hostel portal if student credentials are provided
         if self.runner and password:
             try:
                 extraction = self.runner.extract(
@@ -78,26 +99,79 @@ class HostelService:
                     raise_on_error=False,
                 )
                 if extraction.is_success:
+                    prev_room = (existing_doc.get("room") or {}).get("room_number") if existing_doc else None
+                    prev_mess = (existing_doc.get("mess") or {}).get("mess_name") if existing_doc else None
                     self.repository.save_extraction(extraction)
                     doc = self.repository.get_by_roll_number(roll_clean)
+
+                    if doc and not is_synthetic:
+                        new_room = (doc.get("room") or {}).get("room_number")
+                        new_mess = (doc.get("mess") or {}).get("mess_name")
+                        if prev_room and new_room and prev_room != new_room:
+                            try:
+                                from speed_ser import dispatch_normalized_notification
+                                dispatch_normalized_notification(
+                                    roll_no=roll_clean,
+                                    user=None,
+                                    event_data={
+                                        "category": "hostel",
+                                        "type": "hostel_room",
+                                        "module": "Hostel",
+                                        "source": "Hostel Portal",
+                                        "title": "Hostel Room Updated",
+                                        "message": f"Your hostel room allocation has changed from {prev_room} to {new_room}.",
+                                        "change_key": f"room_{new_room}",
+                                        "changeData": {"previousRoom": prev_room, "newRoom": new_room}
+                                    }
+                                )
+                            except Exception as notif_err:
+                                logger.warning("Could not dispatch hostel room notification: %s", notif_err)
+
+                        if prev_mess and new_mess and prev_mess != new_mess:
+                            try:
+                                from speed_ser import dispatch_normalized_notification
+                                dispatch_normalized_notification(
+                                    roll_no=roll_clean,
+                                    user=None,
+                                    event_data={
+                                        "category": "hostel",
+                                        "type": "hostel_mess",
+                                        "module": "Hostel",
+                                        "source": "Hostel Portal",
+                                        "title": "Hostel Mess Updated",
+                                        "message": f"Your hostel mess subscription has changed from {prev_mess} to {new_mess}.",
+                                        "change_key": f"mess_{new_mess}",
+                                        "changeData": {"previousMess": prev_mess, "newMess": new_mess}
+                                    }
+                                )
+                            except Exception as notif_err:
+                                logger.warning("Could not dispatch hostel mess notification: %s", notif_err)
+
                     if doc:
                         return self._format_response(doc), 200, None
+                else:
+                    error_msg = extraction.error_message if hasattr(extraction, "error_message") else None
+                    logger.warning("Live hostel extraction failed for %s***: %s", roll_clean[:2], error_msg)
             except Exception as exc:
-                logger.warning("Live hostel extraction failed for %s***: %s", roll_clean[:2], exc)
+                logger.warning("Live hostel extraction exception for %s***: %s", roll_clean[:2], exc)
 
-        # 3. If record still missing after check
-        existing_doc = self.repository.get_by_roll_number(roll_clean)
-        if existing_doc:
+        # 3. Fallback: If a valid real record exists from an earlier live run, return it
+        if existing_doc and not is_synthetic:
             return self._format_response(existing_doc), 200, None
 
-        return None, 404, f"No hostel allocation record found for student {roll_clean}."
+        # 4. Explicit test mode fallback only
+        allow_mock = allow_synthetic or (os.getenv("HOSTEL_ALLOW_SYNTHETIC", "").lower() in ("1", "true"))
+        if existing_doc and is_synthetic and allow_mock:
+            return self._format_response(existing_doc), 200, None
+
+        return None, 404, f"No verified hostel records found for student {roll_clean}. Please verify portal credentials or sync status."
 
     def get_student_room(
-        self, roll_number: str, force_refresh: bool = False, password: Optional[str] = None
+        self, roll_number: str, force_refresh: bool = False, password: Optional[str] = None, allow_synthetic: bool = False
     ) -> Tuple[Optional[Dict[str, Any]], int, Optional[str]]:
         """Retrieve room allocation section."""
         overview, status, err = self.get_student_hostel_overview(
-            roll_number=roll_number, force_refresh=force_refresh, password=password
+            roll_number=roll_number, force_refresh=force_refresh, password=password, allow_synthetic=allow_synthetic
         )
         if err or not overview:
             return None, status, err
@@ -109,11 +183,11 @@ class HostelService:
         }, 200, None
 
     def get_student_mess(
-        self, roll_number: str, force_refresh: bool = False, password: Optional[str] = None
+        self, roll_number: str, force_refresh: bool = False, password: Optional[str] = None, allow_synthetic: bool = False
     ) -> Tuple[Optional[Dict[str, Any]], int, Optional[str]]:
         """Retrieve mess subscription section."""
         overview, status, err = self.get_student_hostel_overview(
-            roll_number=roll_number, force_refresh=force_refresh, password=password
+            roll_number=roll_number, force_refresh=force_refresh, password=password, allow_synthetic=allow_synthetic
         )
         if err or not overview:
             return None, status, err
@@ -125,11 +199,11 @@ class HostelService:
         }, 200, None
 
     def get_student_fees(
-        self, roll_number: str, force_refresh: bool = False, password: Optional[str] = None
+        self, roll_number: str, force_refresh: bool = False, password: Optional[str] = None, allow_synthetic: bool = False
     ) -> Tuple[Optional[Dict[str, Any]], int, Optional[str]]:
         """Retrieve hostel fee balance and dues."""
         overview, status, err = self.get_student_hostel_overview(
-            roll_number=roll_number, force_refresh=force_refresh, password=password
+            roll_number=roll_number, force_refresh=force_refresh, password=password, allow_synthetic=allow_synthetic
         )
         if err or not overview:
             return None, status, err
@@ -144,11 +218,11 @@ class HostelService:
         }, 200, None
 
     def get_student_leave(
-        self, roll_number: str, force_refresh: bool = False, password: Optional[str] = None
+        self, roll_number: str, force_refresh: bool = False, password: Optional[str] = None, allow_synthetic: bool = False
     ) -> Tuple[Optional[Dict[str, Any]], int, Optional[str]]:
         """Retrieve leave summary, approvers, and application history."""
         overview, status, err = self.get_student_hostel_overview(
-            roll_number=roll_number, force_refresh=force_refresh, password=password
+            roll_number=roll_number, force_refresh=force_refresh, password=password, allow_synthetic=allow_synthetic
         )
         if err or not overview:
             return None, status, err

@@ -5,12 +5,14 @@ Comprehensive End-to-End Integration Test Suite for Student Sync - Hostel Subsys
 1. Unauthenticated requests return HTTP 401 Unauthorized
 2. Invalid authorization tokens return HTTP 401 Unauthorized
 3. Cross-user access returns HTTP 403 Forbidden (strict student isolation)
-4. Authenticated student accessing own record returns HTTP 200 OK
-5. Missing student records return HTTP 404 Not Found
-6. Sub-endpoints (/room, /mess, /fees, /leave, /overview) return correct domain structures
-7. Data contamination protection: Student A's data NEVER appears for Student B
-8. Zero-write guarantee: Hostel operations NEVER mutate academic collections ('new_users', 'subjects')
-9. Privacy protection: Zero credentials, tokens, or cookies exposed in API responses
+4. Authenticated hosteller accessing own record returns HTTP 200 OK
+5. Authenticated day scholar accessing hostel endpoints returns HTTP 403 Forbidden (backend access control)
+6. Residential status endpoint returns correct status for hosteller vs day scholar
+7. Missing student records return HTTP 404 Not Found
+8. Sub-endpoints (/room, /mess, /fees, /leave, /overview) return correct domain structures for hosteller
+9. Data contamination protection: Student A's data NEVER appears for Student B
+10. Zero-write guarantee: Hostel operations NEVER mutate academic collections ('new_users', 'subjects')
+11. Privacy protection: Zero credentials, tokens, or cookies exposed in API responses
 """
 import os
 import sys
@@ -31,14 +33,48 @@ class TestHostelIntegration(unittest.TestCase):
         cls.app = app
         cls.client = cls.app.test_client()
 
+        # 25MX232 and 25MX231 are verified HOSTELLERs in StudZone 1 / MongoDB
         cls.roll_a = "25MX232"
-        cls.roll_b = "25MX227"
+        cls.roll_c = "25MX231"
         cls.token_a = generate_auth_token(cls.roll_a)
-        cls.token_b = generate_auth_token(cls.roll_b)
+        cls.token_c = generate_auth_token(cls.roll_c)
 
-        # Pre-populate synthetic records for both test students in isolated hostel repository
+        # 25MX227 is a verified DAY_SCHOLAR in StudZone 1 / MongoDB
+        cls.roll_day_scholar = "25MX227"
+        cls.token_day_scholar = generate_auth_token(cls.roll_day_scholar)
+
+        # Backup existing documents if any to prevent corrupting real live extractions
+        cls._original_doc_a = hostel_service.repository.get_by_roll_number(cls.roll_a)
+        cls._original_doc_c = hostel_service.repository.get_by_roll_number(cls.roll_c)
+
+        # Enable synthetic test mode for test runner
+        cls._orig_env = os.environ.get("HOSTEL_ALLOW_SYNTHETIC")
+        os.environ["HOSTEL_ALLOW_SYNTHETIC"] = "1"
+
+        # Pre-populate synthetic records for test hostellers in isolated hostel repository
         hostel_service.populate_synthetic_record(cls.roll_a, run_id="run_test_a_001")
-        hostel_service.populate_synthetic_record(cls.roll_b, run_id="run_test_b_002")
+        hostel_service.populate_synthetic_record(cls.roll_c, run_id="run_test_c_003")
+
+    @classmethod
+    def tearDownClass(cls):
+        # Restore environment
+        if cls._orig_env is not None:
+            os.environ["HOSTEL_ALLOW_SYNTHETIC"] = cls._orig_env
+        else:
+            os.environ.pop("HOSTEL_ALLOW_SYNTHETIC", None)
+
+        # Restore real documents in MongoDB
+        if hostel_service.repository.db is not None:
+            col = hostel_service.repository.db[hostel_service.repository.COLLECTION_NAME]
+            if cls._original_doc_a:
+                col.replace_one({"rollNo": cls.roll_a}, cls._original_doc_a, upsert=True)
+            else:
+                col.delete_one({"rollNo": cls.roll_a})
+
+            if cls._original_doc_c:
+                col.replace_one({"rollNo": cls.roll_c}, cls._original_doc_c, upsert=True)
+            else:
+                col.delete_one({"rollNo": cls.roll_c})
 
     # 1. Unauthenticated requests return 401
     def test_unauthenticated_request_returns_401(self):
@@ -50,6 +86,7 @@ class TestHostelIntegration(unittest.TestCase):
             f"/api/v1/hostel/student/{self.roll_a}/fees",
             f"/api/v1/hostel/student/{self.roll_a}/leave",
             "/api/v1/hostel/overview",
+            "/api/v1/hostel/status",
         ]
         for ep in endpoints:
             resp = self.client.get(ep)
@@ -66,17 +103,17 @@ class TestHostelIntegration(unittest.TestCase):
         data = resp.get_json()
         self.assertFalse(data.get("success", False))
 
-    # 3. Cross-user access returns 403 Forbidden (Student A requesting Student B)
+    # 3. Cross-user access returns 403 Forbidden (Student A requesting Student C)
     def test_cross_user_request_returns_403(self):
         resp = self.client.get(
-            f"/api/v1/hostel/student/{self.roll_b}?auth_token={self.token_a}"
+            f"/api/v1/hostel/student/{self.roll_c}?auth_token={self.token_a}"
         )
         self.assertEqual(resp.status_code, 403)
         data = resp.get_json()
         self.assertIn("Forbidden", data.get("error", ""))
 
-    # 4. Authenticated student accessing own record returns 200 with complete schema
-    def test_authenticated_student_returns_200(self):
+    # 4. Authenticated hosteller accessing own record returns 200 with complete schema
+    def test_authenticated_hosteller_returns_200(self):
         resp = self.client.get(
             f"/api/v1/hostel/student/{self.roll_a}?auth_token={self.token_a}"
         )
@@ -114,7 +151,56 @@ class TestHostelIntegration(unittest.TestCase):
         self.assertIn("approvers", leave)
         self.assertIn("history", leave)
 
-    # 5. Missing student records return 404
+    # 5. Day scholar accessing hostel endpoints returns 403 Forbidden (backend access control)
+    def test_day_scholar_denied_backend_access(self):
+        headers = {"Authorization": f"Bearer {self.token_day_scholar}"}
+        endpoints = [
+            f"/api/v1/hostel/student/{self.roll_day_scholar}",
+            f"/api/v1/hostel/student/{self.roll_day_scholar}/summary",
+            f"/api/v1/hostel/student/{self.roll_day_scholar}/room",
+            f"/api/v1/hostel/student/{self.roll_day_scholar}/mess",
+            f"/api/v1/hostel/student/{self.roll_day_scholar}/fees",
+            f"/api/v1/hostel/student/{self.roll_day_scholar}/leave",
+            "/api/v1/hostel/overview",
+        ]
+        for ep in endpoints:
+            resp = self.client.get(ep, headers=headers)
+            self.assertEqual(resp.status_code, 403, f"Expected 403 for Day Scholar on {ep}")
+            data = resp.get_json()
+            self.assertFalse(data.get("success", True))
+            self.assertIn("Day Scholar", data.get("error", ""))
+            self.assertFalse(data.get("can_access_hostel", True))
+
+    # 6. Residential status endpoint returns correct status
+    def test_residential_status_endpoint(self):
+        # Hosteller check
+        resp_h = self.client.get(
+            "/api/v1/hostel/status",
+            headers={"Authorization": f"Bearer {self.token_a}"}
+        )
+        self.assertEqual(resp_h.status_code, 200)
+        data_h = resp_h.get_json()
+        self.assertTrue(data_h["success"])
+        self.assertEqual(data_h["status"], "HOSTELLER")
+        self.assertTrue(data_h["isHosteller"])
+        self.assertFalse(data_h["isDayScholar"])
+        self.assertTrue(data_h["canAccessHostel"])
+        self.assertEqual(data_h["roomNumber"], "K519")
+
+        # Day scholar check
+        resp_d = self.client.get(
+            "/api/v1/hostel/status",
+            headers={"Authorization": f"Bearer {self.token_day_scholar}"}
+        )
+        self.assertEqual(resp_d.status_code, 200)
+        data_d = resp_d.get_json()
+        self.assertTrue(data_d["success"])
+        self.assertEqual(data_d["status"], "DAY_SCHOLAR")
+        self.assertFalse(data_d["isHosteller"])
+        self.assertTrue(data_d["isDayScholar"])
+        self.assertFalse(data_d["canAccessHostel"])
+
+    # 7. Missing student records return 404
     def test_missing_student_returns_404(self):
         unknown_roll = "25UNKNOWN99"
         unknown_token = generate_auth_token(unknown_roll)
@@ -125,7 +211,7 @@ class TestHostelIntegration(unittest.TestCase):
         data = resp.get_json()
         self.assertFalse(data.get("success"))
 
-    # 6. Sub-endpoints return domain-specific views
+    # 8. Sub-endpoints return domain-specific views for hosteller
     def test_sub_endpoints_domain_views(self):
         headers = {"Authorization": f"Bearer {self.token_a}"}
 
@@ -164,33 +250,33 @@ class TestHostelIntegration(unittest.TestCase):
         self.assertTrue(overview_data["success"])
         self.assertEqual(overview_data["meta"]["rollNo"], self.roll_a)
 
-    # 7. Student isolation and data contamination protection
+    # 9. Student isolation between hostellers
     def test_student_isolation_and_contamination_protection(self):
-        """Verify Student A's records NEVER contaminate Student B's response."""
+        """Verify Student A's records NEVER contaminate Student C's response."""
         resp_a = self.client.get(
             f"/api/v1/hostel/student/{self.roll_a}?auth_token={self.token_a}"
         )
-        resp_b = self.client.get(
-            f"/api/v1/hostel/student/{self.roll_b}?auth_token={self.token_b}"
+        resp_c = self.client.get(
+            f"/api/v1/hostel/student/{self.roll_c}?auth_token={self.token_c}"
         )
         self.assertEqual(resp_a.status_code, 200)
-        self.assertEqual(resp_b.status_code, 200)
+        self.assertEqual(resp_c.status_code, 200)
 
         data_a = resp_a.get_json()["data"]
-        data_b = resp_b.get_json()["data"]
+        data_c = resp_c.get_json()["data"]
 
         # Ensure identities are completely isolated
         self.assertEqual(data_a["profile"]["roll_number"], self.roll_a)
-        self.assertEqual(data_b["profile"]["roll_number"], self.roll_b)
-        self.assertNotEqual(data_a["profile"]["roll_number"], data_b["profile"]["roll_number"])
+        self.assertEqual(data_c["profile"]["roll_number"], self.roll_c)
+        self.assertNotEqual(data_a["profile"]["roll_number"], data_c["profile"]["roll_number"])
 
         meta_a = resp_a.get_json()["meta"]
-        meta_b = resp_b.get_json()["meta"]
+        meta_c = resp_c.get_json()["meta"]
         self.assertEqual(meta_a["rollNo"], self.roll_a)
-        self.assertEqual(meta_b["rollNo"], self.roll_b)
-        self.assertNotEqual(meta_a["runId"], meta_b["runId"])
+        self.assertEqual(meta_c["rollNo"], self.roll_c)
+        self.assertNotEqual(meta_a["runId"], meta_c["runId"])
 
-    # 8. Zero write guarantee to academic collections
+    # 10. Zero write guarantee to academic collections
     def test_zero_write_to_academic_collections(self):
         """Ensure hostel API calls NEVER mutate 'new_users' or 'subjects' collections."""
         if user_collection is None:
@@ -211,7 +297,7 @@ class TestHostelIntegration(unittest.TestCase):
         self.assertEqual(users_count_before, users_count_after)
         self.assertEqual(subs_count_before, subs_count_after)
 
-    # 9. No credentials, tokens, or cookies exposed in response
+    # 11. No credentials, tokens, or cookies exposed in response
     def test_privacy_no_credentials_exposed(self):
         resp = self.client.get(
             f"/api/v1/hostel/student/{self.roll_a}?auth_token={self.token_a}"
@@ -221,3 +307,7 @@ class TestHostelIntegration(unittest.TestCase):
 
         for secret in ["password", "Bearer ey", "Cookie", "Authorization:", "session_id"]:
             self.assertNotIn(secret, resp_text)
+
+
+if __name__ == "__main__":
+    unittest.main()

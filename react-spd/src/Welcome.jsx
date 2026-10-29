@@ -48,9 +48,12 @@ const Welcome = () => {
     const fetchPreferences = async () => {
       try {
         setLoading(true);
-        const response = await fetch(`http://127.0.0.1:5000/profile?rollNo=${profile.rollNo}`, {
+        const storedUser = JSON.parse(localStorage.getItem('student_sync_user') || '{}');
+        const token = profile.auth_token || storedUser.auth_token;
+        const headers = { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) };
+        const response = await fetch(`/api/profile?rollNo=${profile.rollNo}`, {
           method: 'GET',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
         });
 
         if (response.ok) {
@@ -119,9 +122,12 @@ const Welcome = () => {
     try {
       setSaveStatus('Saving...');
       const anyEnabled = Object.values(preferences).some(val => val === true);
-      const response = await fetch('http://127.0.0.1:5000/notifications', {
+      const storedUser = JSON.parse(localStorage.getItem('student_sync_user') || '{}');
+      const token = profile.auth_token || storedUser.auth_token;
+      const headers = { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) };
+      const response = await fetch('/api/notifications', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           rollNo: profile.rollNo,
           notifications: preferences,
@@ -151,7 +157,7 @@ const Welcome = () => {
     setResendingWelcome(true);
     setWelcomeStatus(null);
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/resend-welcome', {
+      const response = await fetch('/api/resend-welcome', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

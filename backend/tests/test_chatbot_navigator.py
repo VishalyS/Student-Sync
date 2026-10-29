@@ -153,6 +153,27 @@ class TestChatbotNavigator(unittest.TestCase):
         resp = self.client.post('/api/chat', json={"message": ""})
         self.assertEqual(resp.status_code, 400)
 
+    def test_12_hostel_navigation_hosteller(self):
+        """Test that verified hosteller asking for hostel navigates to /hostel"""
+        res = process_chatbot_query("take me to hostel", self.test_roll)
+        self.assertEqual(res["intent"], "navigation")
+        self.assertEqual(res["navigation"]["path"], "/hostel")
+        self.assertIn("Hostel Resident Dashboard", res["reply"])
+
+    def test_13_hostel_navigation_day_scholar(self):
+        """Test that day scholar asking for hostel is routed safely to /services with day scholar guidance"""
+        res = process_chatbot_query("take me to hostel", "25MX227")
+        self.assertEqual(res["intent"], "navigation")
+        self.assertEqual(res["navigation"]["path"], "/services")
+        self.assertIn("Day Scholar", res["reply"])
+
+    def test_14_hostel_services_query_hosteller(self):
+        """Test that hosteller querying hostel room receives hostel_services intent and /hostel link"""
+        res = process_chatbot_query("what is my hostel room", self.test_roll)
+        self.assertEqual(res["intent"], "hostel_services")
+        self.assertEqual(res["navigation"]["path"], "/hostel")
+        self.assertIn("Hostel Resident Accommodations", res["reply"])
+
 
 if __name__ == '__main__':
     unittest.main()

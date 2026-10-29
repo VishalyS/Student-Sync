@@ -25,7 +25,16 @@ load_dotenv()
 from pymongo.errors import DuplicateKeyError
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True)  
+_cors_origins = os.getenv('CORS_ORIGINS', os.getenv('ALLOWED_ORIGINS'))
+if _cors_origins:
+    origins_list = [o.strip() for o in _cors_origins.split(',') if o.strip()]
+    CORS(app, origins=origins_list, supports_credentials=True)
+elif os.getenv('FLASK_ENV', os.getenv('ENV', 'development')).lower() == 'production':
+    # In production without CORS_ORIGINS configured, restrict to empty list to prevent wildcard access
+    CORS(app, origins=[], supports_credentials=True)
+else:
+    # In local development, permit Vite and local dev server origins
+    CORS(app, origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5000", "http://127.0.0.1:5000"], supports_credentials=True)
 
 MONGO_URI = os.getenv('MONGO_URI')
 DB_NAME = os.getenv('DB_NAME', 'ecampus')
@@ -133,6 +142,15 @@ except ImportError:
         from speed_ser import process_detected_changes
     except ImportError:
         process_detected_changes = None
+
+try:
+    from residential_service import determine_residential_status
+except ImportError:
+    try:
+        from backend.residential_service import determine_residential_status
+    except ImportError:
+        determine_residential_status = None
+
 
 
 
@@ -447,6 +465,7 @@ def dispatch_welcome_email_to_student(roll_no, student_email=None, student_name=
 
 
 @app.route('/register', methods=['POST'])
+@app.route('/api/register', methods=['POST'])
 def register():
     data = request.get_json() or {}
     rollNo = (data.get('rollNo') or data.get('rollno') or '').strip().upper()
@@ -720,6 +739,16 @@ def get_platform_stats():
 @app.route('/api/notifications', methods=['GET'])
 def get_student_notifications():
     rollNo = (request.args.get('rollNo') or '').strip().upper()
+    user, status_code, err = get_authenticated_student(request)
+    if err:
+        is_prod = os.getenv('FLASK_ENV', os.getenv('ENV', 'development')).lower() == 'production'
+        has_auth_attempt = bool(request.headers.get('Authorization') or request.args.get('auth_token') or request.headers.get('X-Roll-No'))
+        if is_prod or has_auth_attempt:
+            return jsonify({"notifications": [], "unreadCount": 0, "error": err}), status_code
+        if not rollNo:
+            return jsonify({"notifications": [], "unreadCount": 0, "error": err}), status_code
+    else:
+        rollNo = user.get('rollNo')
     try:
         query = {"rollNo": rollNo} if rollNo else {}
         if notifications_collection is None:
@@ -775,7 +804,15 @@ def mark_notification_read():
         return jsonify({"error": str(e)}), 500
 
 
-AUTH_SECRET = os.getenv('SECRET_KEY', 'student_sync_attendance_token_secret_2026').encode('utf-8')
+_secret_key = os.getenv('SECRET_KEY')
+_is_production = os.getenv('FLASK_ENV', os.getenv('ENV', 'development')).lower() == 'production'
+
+if not _secret_key:
+    if _is_production:
+        raise RuntimeError("CRITICAL SECURITY ERROR: SECRET_KEY environment variable MUST be explicitly set in production mode. Refusing to run with fallback default.")
+    _secret_key = 'student_sync_attendance_token_secret_2026'
+
+AUTH_SECRET = _secret_key.encode('utf-8')
 
 
 def generate_auth_token(roll_no):
@@ -871,6 +908,7 @@ def get_authenticated_student(req):
 
 # Login route
 @app.route('/login', methods=['POST'])
+@app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json() or {}
     rollNo = (data.get('rollNo') or '').strip().upper()
@@ -911,6 +949,13 @@ def login():
                 user['_id'] = str(user['_id'])
             user.pop('password', None)
             user['auth_token'] = generate_auth_token(rollNo)
+            if determine_residential_status:
+                res_info = determine_residential_status(user)
+                user['residential_status'] = res_info['status']
+                user['is_hosteller'] = res_info['is_hosteller']
+                user['is_day_scholar'] = res_info['is_day_scholar']
+                user['can_access_hostel'] = res_info['can_access_hostel']
+                user['room_number'] = res_info['room_number']
             return jsonify(user)
 
         # Fallback: attempt direct portal authentication if not found in db
@@ -927,6 +972,13 @@ def login():
                 user_doc['_id'] = str(user_doc['_id'])
             user_doc.pop('password', None)
             user_doc['auth_token'] = generate_auth_token(rollNo)
+            if determine_residential_status:
+                res_info = determine_residential_status(user_doc)
+                user_doc['residential_status'] = res_info['status']
+                user_doc['is_hosteller'] = res_info['is_hosteller']
+                user_doc['is_day_scholar'] = res_info['is_day_scholar']
+                user_doc['can_access_hostel'] = res_info['can_access_hostel']
+                user_doc['room_number'] = res_info['room_number']
             return jsonify(user_doc)
 
         return jsonify({"message": "Invalid credentials. Please try again."}), 401
@@ -976,9 +1028,21 @@ def resend_welcome_email():
 
 # Profile fetching and manual refresh route
 @app.route('/profile', methods=['GET'])
+@app.route('/api/profile', methods=['GET'])
 def profile():
     rollNo = (request.args.get('rollNo') or '').strip().upper()
     refresh = request.args.get('refresh', '').lower() == 'true'
+
+    user, status_code, err = get_authenticated_student(request)
+    if err:
+        is_prod = os.getenv('FLASK_ENV', os.getenv('ENV', 'development')).lower() == 'production'
+        has_auth_attempt = bool(request.headers.get('Authorization') or request.args.get('auth_token') or request.headers.get('X-Roll-No'))
+        if is_prod or has_auth_attempt:
+            return jsonify({"message": err}), status_code
+        if not rollNo:
+            return jsonify({"message": err}), status_code
+    else:
+        rollNo = user.get('rollNo')
 
     try:
         user = users_collection.find_one({"rollNo": rollNo})
@@ -1004,6 +1068,13 @@ def profile():
             user['_id'] = str(user['_id'])
         user.pop('password', None)
         user['auth_token'] = generate_auth_token(rollNo)
+        if determine_residential_status:
+            res_info = determine_residential_status(user)
+            user['residential_status'] = res_info['status']
+            user['is_hosteller'] = res_info['is_hosteller']
+            user['is_day_scholar'] = res_info['is_day_scholar']
+            user['can_access_hostel'] = res_info['can_access_hostel']
+            user['room_number'] = res_info['room_number']
         return jsonify(user)
 
     except Exception as e:
@@ -1257,6 +1328,7 @@ def update_password():
 
 
 @app.route('/send-message', methods=['POST'])
+@app.route('/api/send-message', methods=['POST'])
 def send_message():
     data = request.json or {}
     name = data.get('name')
@@ -1704,6 +1776,99 @@ except ImportError:
     except ImportError:
         hostel_service = None
 
+try:
+    from residential_service import (
+        determine_residential_status,
+        STATUS_HOSTELLER,
+        STATUS_DAY_SCHOLAR,
+        STATUS_UNKNOWN,
+    )
+except ImportError:
+    try:
+        from backend.residential_service import (
+            determine_residential_status,
+            STATUS_HOSTELLER,
+            STATUS_DAY_SCHOLAR,
+            STATUS_UNKNOWN,
+        )
+    except ImportError:
+        determine_residential_status = None
+        STATUS_HOSTELLER = "HOSTELLER"
+        STATUS_DAY_SCHOLAR = "DAY_SCHOLAR"
+        STATUS_UNKNOWN = "UNKNOWN"
+
+
+def check_hostel_authorization(user, target_rollno=None):
+    """
+    Enforces two-tier backend authorization for hostel records:
+    1. Identity verification: Student A cannot access Student B's data (anti-IDOR).
+    2. Residential eligibility: Day scholars and unknown/unverified statuses are strictly forbidden.
+    Returns: (is_authorized, error_response, status_code)
+    """
+    auth_roll = (user.get('rollNo') or '').strip().upper()
+    if target_rollno:
+        req_roll = target_rollno.strip().upper()
+        if auth_roll != req_roll:
+            return False, jsonify({
+                "success": False,
+                "error": "Forbidden: You are not authorized to view another student's hostel records."
+            }), 403
+
+    if determine_residential_status:
+        res_status = determine_residential_status(user)
+        if res_status["status"] == STATUS_DAY_SCHOLAR:
+            return False, jsonify({
+                "success": False,
+                "error": "Forbidden: Access Denied. You are registered as a Day Scholar. Hostel services are exclusively available to verified hostel residents.",
+                "residential_status": res_status["status"],
+                "can_access_hostel": False
+            }), 403
+        elif res_status["status"] != STATUS_HOSTELLER:
+            return False, jsonify({
+                "success": False,
+                "error": "Forbidden: Access Denied. Your residential eligibility could not be verified from institutional records. Please refresh your profile or contact campus administration.",
+                "residential_status": res_status["status"],
+                "can_access_hostel": False
+            }), 403
+
+    return True, None, 200
+
+
+@app.route('/api/v1/hostel/status', methods=['GET'])
+@app.route('/api/hostel/status', methods=['GET'])
+@app.route('/v1/hostel/status', methods=['GET'])
+@app.route('/hostel/status', methods=['GET'])
+@app.route('/api/v1/student/residential-status', methods=['GET'])
+@app.route('/api/student/residential-status', methods=['GET'])
+@app.route('/v1/student/residential-status', methods=['GET'])
+@app.route('/student/residential-status', methods=['GET'])
+def hostel_residential_status():
+    """
+    Returns the verified residential status of the authenticated student
+    derived strictly from StudZone 1 portal records.
+    Never defaults to HOSTELLER for missing or unverified data.
+    """
+    user, status_code, err = get_authenticated_student(request)
+    if err:
+        return jsonify({"success": False, "error": err}), status_code
+
+    auth_roll = (user.get('rollNo') or '').strip().upper()
+    if not determine_residential_status:
+        return jsonify({"success": False, "error": "Residential status service not available."}), 503
+
+    res_status = determine_residential_status(user)
+    return jsonify({
+        "success": True,
+        "rollNo": auth_roll,
+        "status": res_status["status"],
+        "isHosteller": res_status["is_hosteller"],
+        "isDayScholar": res_status["is_day_scholar"],
+        "canAccessHostel": res_status["can_access_hostel"],
+        "roomNumber": res_status["room_number"],
+        "verifiedSource": res_status["verified_source"],
+        "rawStatus": res_status["raw_status"]
+    }), 200
+
 
 @app.route('/api/v1/hostel/student/<rollno>', methods=['GET'])
 @app.route('/api/hostel/student/<rollno>', methods=['GET'])
@@ -1716,23 +1881,20 @@ except ImportError:
 def hostel_student_summary(rollno):
     """
     Returns complete normalized hostel records for an authenticated resident.
-    Enforces student isolation: Student A cannot view Student B's hostel data.
+    Enforces student isolation and residential eligibility.
     """
     user, status_code, err = get_authenticated_student(request)
     if err:
         return jsonify({"success": False, "error": err}), status_code
 
-    auth_roll = (user.get('rollNo') or '').strip().upper()
-    req_roll = rollno.strip().upper()
-    if auth_roll != req_roll:
-        return jsonify({
-            "success": False,
-            "error": "Forbidden: You are not authorized to view another student's hostel records."
-        }), 403
+    is_auth, auth_err, auth_status = check_hostel_authorization(user, target_rollno=rollno)
+    if not is_auth:
+        return auth_err, auth_status
 
     if not hostel_service:
         return jsonify({"success": False, "error": "Hostel service not available."}), 503
 
+    req_roll = rollno.strip().upper()
     refresh = request.args.get('refresh', '').lower() == 'true'
     res, status, err_msg = hostel_service.get_student_hostel_overview(
         roll_number=req_roll,
@@ -1754,17 +1916,14 @@ def hostel_student_room(rollno):
     if err:
         return jsonify({"success": False, "error": err}), status_code
 
-    auth_roll = (user.get('rollNo') or '').strip().upper()
-    req_roll = rollno.strip().upper()
-    if auth_roll != req_roll:
-        return jsonify({
-            "success": False,
-            "error": "Forbidden: You are not authorized to view another student's hostel records."
-        }), 403
+    is_auth, auth_err, auth_status = check_hostel_authorization(user, target_rollno=rollno)
+    if not is_auth:
+        return auth_err, auth_status
 
     if not hostel_service:
         return jsonify({"success": False, "error": "Hostel service not available."}), 503
 
+    req_roll = rollno.strip().upper()
     refresh = request.args.get('refresh', '').lower() == 'true'
     res, status, err_msg = hostel_service.get_student_room(
         roll_number=req_roll,
@@ -1786,17 +1945,14 @@ def hostel_student_mess(rollno):
     if err:
         return jsonify({"success": False, "error": err}), status_code
 
-    auth_roll = (user.get('rollNo') or '').strip().upper()
-    req_roll = rollno.strip().upper()
-    if auth_roll != req_roll:
-        return jsonify({
-            "success": False,
-            "error": "Forbidden: You are not authorized to view another student's hostel records."
-        }), 403
+    is_auth, auth_err, auth_status = check_hostel_authorization(user, target_rollno=rollno)
+    if not is_auth:
+        return auth_err, auth_status
 
     if not hostel_service:
         return jsonify({"success": False, "error": "Hostel service not available."}), 503
 
+    req_roll = rollno.strip().upper()
     refresh = request.args.get('refresh', '').lower() == 'true'
     res, status, err_msg = hostel_service.get_student_mess(
         roll_number=req_roll,
@@ -1818,17 +1974,14 @@ def hostel_student_fees(rollno):
     if err:
         return jsonify({"success": False, "error": err}), status_code
 
-    auth_roll = (user.get('rollNo') or '').strip().upper()
-    req_roll = rollno.strip().upper()
-    if auth_roll != req_roll:
-        return jsonify({
-            "success": False,
-            "error": "Forbidden: You are not authorized to view another student's hostel records."
-        }), 403
+    is_auth, auth_err, auth_status = check_hostel_authorization(user, target_rollno=rollno)
+    if not is_auth:
+        return auth_err, auth_status
 
     if not hostel_service:
         return jsonify({"success": False, "error": "Hostel service not available."}), 503
 
+    req_roll = rollno.strip().upper()
     refresh = request.args.get('refresh', '').lower() == 'true'
     res, status, err_msg = hostel_service.get_student_fees(
         roll_number=req_roll,
@@ -1850,17 +2003,14 @@ def hostel_student_leave(rollno):
     if err:
         return jsonify({"success": False, "error": err}), status_code
 
-    auth_roll = (user.get('rollNo') or '').strip().upper()
-    req_roll = rollno.strip().upper()
-    if auth_roll != req_roll:
-        return jsonify({
-            "success": False,
-            "error": "Forbidden: You are not authorized to view another student's hostel records."
-        }), 403
+    is_auth, auth_err, auth_status = check_hostel_authorization(user, target_rollno=rollno)
+    if not is_auth:
+        return auth_err, auth_status
 
     if not hostel_service:
         return jsonify({"success": False, "error": "Hostel service not available."}), 503
 
+    req_roll = rollno.strip().upper()
     refresh = request.args.get('refresh', '').lower() == 'true'
     res, status, err_msg = hostel_service.get_student_leave(
         roll_number=req_roll,
@@ -1882,6 +2032,10 @@ def hostel_authenticated_overview():
     if err:
         return jsonify({"success": False, "error": err}), status_code
 
+    is_auth, auth_err, auth_status = check_hostel_authorization(user)
+    if not is_auth:
+        return auth_err, auth_status
+
     auth_roll = (user.get('rollNo') or '').strip().upper()
     if not hostel_service:
         return jsonify({"success": False, "error": "Hostel service not available."}), 503
@@ -1898,6 +2052,7 @@ def hostel_authenticated_overview():
 
 
 
+
 # =========================================================================
 # Chatbot & Interactive Academic Navigator Engine
 # =========================================================================
@@ -1908,6 +2063,8 @@ except ImportError:
 
 @app.route('/api/chat', methods=['POST'])
 @app.route('/api/chatbot', methods=['POST'])
+@app.route('/chat', methods=['POST'])
+@app.route('/chatbot', methods=['POST'])
 def chatbot_endpoint():
     """
     Intelligent Assistant & Page Navigator for Student Sync.
@@ -1944,7 +2101,35 @@ def chatbot_endpoint():
     return jsonify(response), 200
 
 
+@app.route('/health', methods=['GET'])
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Safe system and service health check endpoint."""
+    is_db_connected = False
+    if client is not None and db is not None:
+        try:
+            client.admin.command('ping')
+            is_db_connected = True
+        except Exception:
+            is_db_connected = False
+
+    return jsonify({
+        "status": "healthy" if is_db_connected else "degraded",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": "1.0.0",
+        "database": "connected" if is_db_connected else "disconnected",
+        "services": {
+            "studzone1": "operational",
+            "studzone2": "operational",
+            "hostel": "operational" if hostel_service is not None else "unavailable",
+            "chatbot": "operational"
+        }
+    }), 200
+
+
 if __name__ == "__main__":
     port = int(os.getenv('PORT', 5000))
-    app.run(debug=True, use_reloader=False, port=port, host='127.0.0.1')
+    host = os.getenv('HOST', '127.0.0.1')
+    debug_mode = os.getenv('FLASK_DEBUG', 'false').lower() in ('true', '1', 'yes')
+    app.run(debug=debug_mode, use_reloader=False, port=port, host=host)
 

@@ -89,8 +89,7 @@ const AttendanceSimulator = ({
         headers['Authorization'] = `Bearer ${effectiveToken}`;
       }
 
-      // Try /api/attendance/simulate with fallback to direct /attendance/simulate
-      const response = await fetch('http://127.0.0.1:5000/api/attendance/simulate', {
+      const response = await fetch('/api/attendance/simulate', {
         method: 'POST',
         headers,
         body: JSON.stringify({

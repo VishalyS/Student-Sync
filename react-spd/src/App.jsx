@@ -14,6 +14,7 @@ import AttendanceDashboard from './AttendanceDashboard';
 import AcademicPlannerDashboard from './AcademicPlannerDashboard';
 import ScheduleDashboard from './ScheduleDashboard';
 import CampusServicesDashboard from './CampusServicesDashboard';
+import HostelDashboard from './HostelDashboard';
 import ChatbotWidget from './components/chatbot/ChatbotWidget';
 
 function App() {
@@ -32,6 +33,7 @@ function App() {
         <Route path="/schedule" element={<ScheduleDashboard />} />
         <Route path="/planner" element={<Navigate to="/dashboard" replace />} />
         <Route path="/services" element={<CampusServicesDashboard />} />
+        <Route path="/hostel" element={<HostelDashboard />} />
         <Route path="/welcome" element={<Welcome />} />
         <Route path="/about" element={<About />} />
         <Route path="/contact" element={<Contact />} />

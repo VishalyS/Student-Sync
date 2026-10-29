@@ -202,6 +202,44 @@ def process_chatbot_query(query: str, roll_no: str, conversation_history: Option
     # Check for direct Navigation request first
     is_explicit_nav = any(kw in q_clean for kw in ["go to", "take me to", "navigate to", "open", "show me page", "where is", "open page", "visit"])
     if is_explicit_nav:
+        # Check if query is specifically targeting hostel
+        if any(hk in q_clean for hk in ["hostel", "mess", "room allocation"]):
+            try:
+                from residential_service import determine_residential_status, STATUS_HOSTELLER
+            except ImportError:
+                from backend.residential_service import determine_residential_status, STATUS_HOSTELLER
+
+            res_info = determine_residential_status(user_doc)
+            if res_info.get("status") == STATUS_HOSTELLER:
+                room_str = f" (Room {res_info.get('room_number')})" if res_info.get("room_number") else ""
+                return {
+                    "reply": f"Sure {first_name}! Navigating you to the **Hostel Resident Dashboard**{room_str}.\n\n_Access room allocation, mess billing, leave passes, and hostel fee receipts._",
+                    "intent": "navigation",
+                    "navigation": {
+                        "path": "/hostel",
+                        "label": "Open Hostel Dashboard →"
+                    },
+                    "suggestions": [
+                        "What is my overall attendance?",
+                        "What classes do I have today?",
+                        "Take me to Services"
+                    ]
+                }
+            else:
+                return {
+                    "reply": f"Hi {first_name}, you are registered as a **Day Scholar** according to official StudZone records. Hostel resident portal features are reserved for verified campus hostellers. For college tuition and fee receipts, please visit Campus Services.",
+                    "intent": "navigation",
+                    "navigation": {
+                        "path": "/services",
+                        "label": "Open Campus Services & Fees →"
+                    },
+                    "suggestions": [
+                        "What is my overall attendance?",
+                        "What classes do I have today?",
+                        "Take me to Services"
+                    ]
+                }
+
         for route in NAV_ROUTES:
             if any(k in q_clean for k in route["keywords"]):
                 return {
@@ -573,6 +611,34 @@ def process_chatbot_query(query: str, roll_no: str, conversation_history: Option
 
     # 8. FEES, HOSTEL, CAMPUS SERVICES
     if any(kw in q_clean for kw in ["fee", "tuition", "dues", "hostel", "mess", "receipt"]):
+        try:
+            from residential_service import determine_residential_status, STATUS_HOSTELLER
+        except ImportError:
+            from backend.residential_service import determine_residential_status, STATUS_HOSTELLER
+
+        res_info = determine_residential_status(user_doc)
+        is_hostel_query = any(kw in q_clean for kw in ["hostel", "mess", "room allocation"])
+
+        if is_hostel_query and res_info.get("status") == STATUS_HOSTELLER:
+            room_disp = res_info.get("room_number") or "Allocated"
+            reply = (
+                f"### 🏨 Hostel Resident Accommodations\n\n"
+                f"- **Resident Status:** Verified HOSTELLER ✅\n"
+                f"- **Room Allocation:** **{room_disp}**\n"
+                f"- **Hostel Services:** Room details, mess billing, and leave passes are active.\n\n"
+                f"You can manage your room, view mess attendance, check hostel dues, and apply for digital leave passes directly in the Hostel Dashboard!"
+            )
+            return {
+                "reply": reply,
+                "intent": "hostel_services",
+                "navigation": {"path": "/hostel", "label": "Open Hostel Dashboard →"},
+                "suggestions": [
+                    "What is my overall attendance?",
+                    "What classes do I have today?",
+                    "Take me to Hostel"
+                ]
+            }
+
         fees_html = user_doc.get("fees") or (user_doc.get("studzone1") or {}).get("fees_html", "")
         hostel_html = user_doc.get("hostel") or (user_doc.get("studzone1") or {}).get("hostel_html", "")
 
@@ -582,7 +648,7 @@ def process_chatbot_query(query: str, roll_no: str, conversation_history: Option
         reply = (
             f"### 🏛️ Campus Services & Fee Records\n\n"
             f"- **Semester Tuition Fees:** {'Receipts recorded on file ✅' if has_fees else 'Synced with StudZone 1'}\n"
-            f"- **Hostel Accommodations:** {'Allocations verified ✅' if has_hostel else 'Campus Day Scholar / Synced'}\n\n"
+            f"- **Hostel Accommodations:** {'Allocations verified ✅' if res_info.get('is_hosteller') else 'Campus Day Scholar / Synced'}\n\n"
             f"Visit Campus Services to view official printable fee receipts, library OPAC catalog, and student applications."
         )
 
