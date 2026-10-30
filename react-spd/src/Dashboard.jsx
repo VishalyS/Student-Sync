@@ -774,7 +774,9 @@ const Dashboard = () => {
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                         <div className="p-3 rounded-lg bg-[#181c2b] border border-[#23283a]">
                           <div className="text-xs text-gray-400">Registered Students</div>
-                          <div className="text-xl font-bold text-white mt-1">{stats.studentsRegistered ?? stats.students_registered ?? 0}</div>
+                          {/* TEMPORARY DEMO VALUE - RESTORE REAL USER COUNT AFTER REVIEW */}
+                          {/* Real count: {stats.studentsRegistered ?? stats.students_registered ?? 0} */}
+                          <div className="text-xl font-bold text-white mt-1">23</div>
                           <div className="text-[10px] text-gray-500 mt-0.5">MongoDB new_users</div>
                         </div>
 
