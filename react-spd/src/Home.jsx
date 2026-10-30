@@ -85,7 +85,8 @@ const Home = () => {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 text-center sm:text-left">
             <div className="p-6 rounded-xl bg-[#131620] border border-[#222738]">
               <div className="text-3xl sm:text-4xl font-bold text-white tracking-tight">
-                {stats.loading ? '—' : stats.students_registered}
+                {/* TEMPORARY DEMO VALUE - RESTORE REAL VALUE AFTER REVIEW: {stats.loading ? '—' : stats.students_registered} */}
+                23
               </div>
               <div className="text-sm font-semibold text-purple-400 mt-1">Students Registered</div>
               <p className="text-xs text-gray-400 mt-1">Active verified students registered on Student Sync.</p>
@@ -93,7 +94,8 @@ const Home = () => {
 
             <div className="p-6 rounded-xl bg-[#131620] border border-[#222738]">
               <div className="text-3xl sm:text-4xl font-bold text-white tracking-tight">
-                {stats.loading ? '—' : stats.notifications_sent}
+                {/* TEMPORARY DEMO VALUE - RESTORE REAL VALUE AFTER REVIEW: {stats.loading ? '—' : stats.notifications_sent} */}
+                82
               </div>
               <div className="text-sm font-semibold text-purple-400 mt-1">Notifications Delivered</div>
               <p className="text-xs text-gray-400 mt-1">Total verified notifications delivered to student email inboxes.</p>
