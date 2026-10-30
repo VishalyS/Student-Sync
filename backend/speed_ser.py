@@ -48,6 +48,14 @@ except ImportError:
     from notifications.recovery import recover_stale_notifications
     from attendance_calculator import resolve_student_attendance_records
 
+try:
+    from backend.crypto_service import get_student_portal_password
+except ImportError:
+    try:
+        from crypto_service import get_student_portal_password
+    except ImportError:
+        def get_student_portal_password(u): return (u or {}).get('password', '')
+
 MONGO_URI = os.getenv('MONGO_URI')
 DB_NAME = os.getenv('DB_NAME', 'ecampus')
 
@@ -244,7 +252,7 @@ def sync_single_user(user, db):
     detects actual granular changes, updates MongoDB, and emits specific notifications.
     """
     roll_no = user.get('rollNo', '').strip().upper()
-    password = user.get('password', '')
+    password = get_student_portal_password(user)
     
     if not roll_no or not password:
         return None

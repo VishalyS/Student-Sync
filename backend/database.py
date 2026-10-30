@@ -86,6 +86,13 @@ def ensure_database_indexes(target_db):
         if "rollNo_unique" not in user_indexes and "rollNo_1" not in user_indexes:
             users_col.create_index("rollNo", unique=True, name="rollNo_unique")
             logger.info("Verified/created unique index 'rollNo_unique' on new_users")
+
+        resets_col = target_db['password_resets']
+        reset_indexes = resets_col.index_information()
+        if "rollNo_1" not in reset_indexes:
+            resets_col.create_index("rollNo", name="rollNo_1")
+        if "expires_at_1" not in reset_indexes:
+            resets_col.create_index("expires_at", name="expires_at_1")
     except Exception as e:
         logger.error(f"Error ensuring indexes on MongoDB collections: {e}")
 
@@ -95,8 +102,9 @@ try:
     user_collection = db['new_users']
     sub_collection = db['subjects']
     notifications_collection = db['notifications_log']
+    password_resets_collection = db['password_resets']
     ensure_database_indexes(db)
     logger.info("Database collections initialized successfully")
 except Exception as e:
     logger.error(f"Failed to initialize database: {e}")
-    client, db, user_collection, sub_collection, notifications_collection = None, None, None, None, None
+    client, db, user_collection, sub_collection, notifications_collection, password_resets_collection = None, None, None, None, None, None

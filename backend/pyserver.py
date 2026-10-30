@@ -14,7 +14,8 @@ import sys
 import hmac
 import hashlib
 import base64
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 env_path = os.path.join(os.path.dirname(__file__), '.env')
@@ -57,6 +58,25 @@ db = client[DB_NAME] if client else None
 users_collection = db[USERS_COLLECTION] if db is not None else None
 sub_collection = db['subjects'] if db is not None else None
 notifications_collection = db['notifications_log'] if db is not None else None
+password_resets_collection = db['password_resets'] if db is not None else None
+
+try:
+    from backend.crypto_service import (
+        encrypt_credential, decrypt_credential, get_student_portal_password,
+        is_encrypted, migrate_student_credentials
+    )
+except ImportError:
+    try:
+        from crypto_service import (
+            encrypt_credential, decrypt_credential, get_student_portal_password,
+            is_encrypted, migrate_student_credentials
+        )
+    except ImportError:
+        def encrypt_credential(p): return p
+        def decrypt_credential(p): return p
+        def get_student_portal_password(u): return (u or {}).get('password', '')
+        def is_encrypted(p): return False
+        def migrate_student_credentials(c): return 0
 
 try:
     from backend.database import ensure_database_indexes
@@ -68,6 +88,12 @@ except ImportError:
 
 if ensure_database_indexes and db is not None:
     ensure_database_indexes(db)
+
+if users_collection is not None:
+    try:
+        migrate_student_credentials(users_collection)
+    except Exception as _mig_err:
+        print(f"[CRYPTO] Safe credential migration notice: {_mig_err}")
 
 # Import dual-portal authentication & scrapers with resilient paths
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -160,7 +186,8 @@ def sync_student_dual_portal(rollNo, password):
     extracts all academic, examination, administrative, and student services modules,
     and updates the single student document in MongoDB with granular module sync statuses.
     """
-    user_credentials = {'rollNo': rollNo, 'password': password}
+    portal_password = decrypt_credential(password)
+    user_credentials = {'rollNo': rollNo, 'password': portal_password}
     now_iso = datetime.now(timezone.utc).isoformat()
     
     # 1. Authenticate & Scrape StudZone 1 (Modern)
@@ -247,7 +274,7 @@ def sync_student_dual_portal(rollNo, password):
     merged_user = {
         "rollNo": rollNo,
         "email": student_email,
-        "password": password,
+        "password": encrypt_credential(password),
         "name": student_name,
         "monitoring_enabled": monitoring_enabled,
         "profile": sz1_data.get("profile", {}) if sz1_data else (existing_user.get('profile', {}) if existing_user else {}),
@@ -500,7 +527,7 @@ def register():
                 {"rollNo": rollNo},
                 {"$set": {
                     "rollNo": rollNo,
-                    "password": password,
+                    "password": encrypt_credential(password),
                     "email": student_email,
                     "baseline_initialized": False,
                     "monitoring_enabled": False,
@@ -873,9 +900,11 @@ def get_authenticated_student(req):
         x_roll = req.headers.get('X-Roll-No', '').strip().upper()
         x_pwd = req.headers.get('X-Password', '').strip()
         if x_roll and x_pwd and users_collection is not None:
-            user = users_collection.find_one({"rollNo": x_roll, "password": x_pwd})
+            user = users_collection.find_one({"rollNo": x_roll})
             if user:
-                authenticated_roll = x_roll
+                stored_pwd = get_student_portal_password(user)
+                if hmac.compare_digest(x_pwd, stored_pwd):
+                    authenticated_roll = x_roll
 
     if not authenticated_roll:
         return None, 401, "Authentication required. Please log in to access your attendance records."
@@ -915,9 +944,17 @@ def login():
     password = (data.get('password') or '').strip()
 
     try:
-        user = users_collection.find_one({"rollNo": rollNo, "password": password})
-
+        user = users_collection.find_one({"rollNo": rollNo}) if users_collection is not None else None
+        valid_password = False
         if user:
+            stored_pwd = get_student_portal_password(user)
+            if hmac.compare_digest(password, stored_pwd):
+                valid_password = True
+                # Migrate legacy unencrypted password if found
+                if not is_encrypted(user.get('password')):
+                    users_collection.update_one({"_id": user["_id"]}, {"$set": {"password": encrypt_credential(password)}})
+
+        if user and valid_password:
             # Auto-sync fresh portal data if last sync was more than 3 minutes ago
             last_sync_iso = user.get('last_successful_studzone1') or user.get('lastSyncedAt')
             needs_sync = True
@@ -1052,7 +1089,7 @@ def profile():
 
         # If manual refresh requested, re-sync from both portals
         if refresh and user.get('password'):
-            updated_doc, err = sync_student_dual_portal(rollNo, user['password'])
+            updated_doc, err = sync_student_dual_portal(rollNo, get_student_portal_password(user))
             if updated_doc:
                 user = updated_doc
 
@@ -1221,16 +1258,128 @@ def update_notifications():
         return jsonify({"message": "Server error. Please try again later."}), 500
 
 
-# Update StudZone Portal Password Route
+# Password Recovery Request Route (SEC-01)
+@app.route('/api/auth/request-reset', methods=['POST'])
+@app.route('/api/request-reset', methods=['POST'])
+def request_password_reset():
+    """
+    Initiates secure password recovery for a student account.
+    Generates a cryptographically random short-lived, single-use token and numeric OTP.
+    Hashes both via SHA-256 before persisting to MongoDB 'password_resets'.
+    Dispatches instructions and code to the student's registered email address.
+    """
+    if not request.is_json:
+        return jsonify({"message": "Malformed request. JSON body required."}), 400
+
+    data = request.get_json() or {}
+    roll_no = (data.get('rollNo') or data.get('rollno') or '').strip().upper()
+    if not roll_no:
+        return jsonify({"message": "Roll number is required."}), 400
+
+    if users_collection is None:
+        return jsonify({"message": "Database not connected."}), 500
+
+    user = users_collection.find_one({"rollNo": roll_no})
+    if not user:
+        return jsonify({"message": f"Student {roll_no} not found. Please verify your roll number."}), 404
+
+    reset_token = secrets.token_urlsafe(32)
+    otp = f"{secrets.randbelow(900000) + 100000}"
+
+    token_hash = hashlib.sha256(reset_token.encode('utf-8')).hexdigest()
+    otp_hash = hashlib.sha256(otp.encode('utf-8')).hexdigest()
+
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=15)
+
+    if password_resets_collection is not None:
+        try:
+            password_resets_collection.update_many(
+                {"rollNo": roll_no, "used": False},
+                {"$set": {"used": True, "invalidated_by_new_request": True}}
+            )
+            reset_doc = {
+                "rollNo": roll_no,
+                "token_hash": token_hash,
+                "otp_hash": otp_hash,
+                "created_at": now,
+                "expires_at": expires_at,
+                "used": False,
+                "used_at": None,
+                "ip_address": request.remote_addr
+            }
+            password_resets_collection.insert_one(reset_doc)
+        except Exception as db_err:
+            print(f"[RECOVERY DB ERROR] {db_err}")
+
+    recipient_email = (user.get('email') or '').strip() or f"{roll_no.lower()}@psgtech.ac.in"
+    student_name = user.get('name', roll_no)
+
+    email_subject = "Student Sync — Password Reset Verification Code"
+    email_body = f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0b0d13; color: #f3f4f6;">
+      <div style="max-width: 520px; margin: 0 auto; background-color: #131620; border: 1px solid #232738; border-radius: 12px; padding: 24px;">
+        <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #a78bfa; font-weight: 600; margin-bottom: 6px;">
+          Account Security • Password Recovery
+        </div>
+        <h2 style="color: #ffffff; font-size: 18px; margin-top: 0; margin-bottom: 12px;">Password Recovery Verification</h2>
+        <p style="color: #e5e7eb; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
+          Hello {student_name}, a password reset was requested for your Student Sync account (<strong>{roll_no}</strong>).
+        </p>
+        <div style="padding: 16px; border-radius: 8px; background-color: #181c2b; border: 1px solid #7c3aed; text-align: center; margin-bottom: 20px;">
+          <div style="font-size: 12px; color: #9ca3af; margin-bottom: 4px;">Your 6-Digit Verification Code:</div>
+          <div style="font-size: 28px; font-weight: 700; letter-spacing: 4px; color: #a78bfa; font-family: monospace;">{otp}</div>
+          <div style="font-size: 11px; color: #6b7280; margin-top: 6px;">Expires in 15 minutes. Single-use only.</div>
+        </div>
+        <p style="color: #9ca3af; font-size: 12px; margin-bottom: 16px;">
+          If you did not request this code, you can safely ignore this email. Your password will remain unchanged.
+        </p>
+      </div>
+    </body>
+    </html>
+    """
+    try:
+        queue_tracked_email(roll_no, recipient_email, "security", email_subject, email_body)
+    except Exception as q_err:
+        print(f"[RECOVERY EMAIL] Error queueing reset email for {roll_no}: {q_err}")
+
+    resp_payload = {
+        "success": True,
+        "message": f"Verification code sent to {recipient_email}.",
+        "rollNo": roll_no
+    }
+    if not _is_production:
+        resp_payload["reset_token"] = reset_token
+        resp_payload["otp"] = otp
+
+    return jsonify(resp_payload), 200
+
+
+# Update StudZone Portal Password Route (SEC-01 Hardened)
 @app.route('/update', methods=['POST'])
 @app.route('/api/update', methods=['POST'])
 def update_password():
+    """
+    Secure password update endpoint.
+    Requires EITHER:
+      A. Valid authenticated student session (Bearer token / header credentials) matching target rollNo.
+         If logged in, verifies ownership and prevents cross-user modification.
+      OR
+      B. Valid, unexpired, single-use password reset token or 6-digit OTP issued via /api/request-reset.
+    Arbitrary unauthenticated roll number password changes are strictly rejected with 401 Unauthorized.
+    Cross-user modifications are rejected with 403 Forbidden.
+    """
     data = request.get_json() or {}
     rollNo = (data.get('rollno') or data.get('rollNo') or '').strip().upper()
-    password = (data.get('password') or '').strip()
+    new_password = (data.get('password') or data.get('new_password') or '').strip()
+    current_password = (data.get('current_password') or data.get('currentPassword') or '').strip()
+    provided_token = (data.get('reset_token') or data.get('token') or request.args.get('token') or '').strip()
+    provided_otp = (data.get('otp') or '').strip()
 
-    if not rollNo or not password:
-        return jsonify({"message": "Roll number and password are required."}), 400
+    if not rollNo or not new_password:
+        return jsonify({"message": "Roll number and new password are required."}), 400
 
     if users_collection is None:
         return jsonify({"message": "Database not connected."}), 500
@@ -1240,12 +1389,88 @@ def update_password():
         if not user:
             return jsonify({"message": "Student not found. Please verify roll number."}), 404
 
+        # 1. Check if caller is authenticated as this student
+        is_authorized = False
+        auth_user, status_code, err = get_authenticated_student(request)
+        if auth_user:
+            auth_roll = auth_user.get('rollNo', '').strip().upper()
+            if auth_roll != rollNo:
+                return jsonify({"message": f"Cross-user access denied. Authenticated as {auth_roll}, cannot update {rollNo}."}), 403
+
+            if current_password:
+                stored_pwd = get_student_portal_password(user)
+                if not hmac.compare_digest(current_password, stored_pwd):
+                    return jsonify({"message": "Current password does not match existing records."}), 401
+
+            is_authorized = True
+
+        # 2. If not authenticated via session, check single-use recovery token / OTP
+        if not is_authorized:
+            if not provided_token and not provided_otp:
+                return jsonify({
+                    "message": "Authentication required. Please log in or provide a valid password reset token or OTP.",
+                    "detail": "Unauthenticated password updates are strictly prohibited."
+                }), 401
+
+            if password_resets_collection is None:
+                return jsonify({"message": "Password reset verification service unavailable."}), 503
+
+            now = datetime.now(timezone.utc)
+            candidate_resets = list(password_resets_collection.find({
+                "rollNo": rollNo,
+                "used": False,
+                "expires_at": {"$gte": now}
+            }).sort("created_at", -1))
+
+            matched_reset = None
+            for candidate in candidate_resets:
+                exp = candidate.get("expires_at")
+                if exp:
+                    if isinstance(exp, str):
+                        try:
+                            exp = datetime.fromisoformat(exp.replace('Z', '+00:00'))
+                        except Exception:
+                            pass
+                    if exp.tzinfo is None:
+                        exp = exp.replace(tzinfo=timezone.utc)
+                    if exp < now:
+                        continue
+
+                if provided_token:
+                    cand_token_hash = candidate.get("token_hash", "")
+                    input_token_hash = hashlib.sha256(provided_token.encode('utf-8')).hexdigest()
+                    if hmac.compare_digest(cand_token_hash, input_token_hash):
+                        matched_reset = candidate
+                        break
+                if provided_otp:
+                    cand_otp_hash = candidate.get("otp_hash", "")
+                    input_otp_hash = hashlib.sha256(provided_otp.encode('utf-8')).hexdigest()
+                    if hmac.compare_digest(cand_otp_hash, input_otp_hash):
+                        matched_reset = candidate
+                        break
+
+            if not matched_reset:
+                return jsonify({"message": "Invalid, expired, or already used reset token/OTP."}), 401
+
+            consume_res = password_resets_collection.update_one(
+                {"_id": matched_reset["_id"], "used": False},
+                {"$set": {"used": True, "used_at": now}}
+            )
+            if consume_res.modified_count == 0:
+                return jsonify({"message": "Reset token was already consumed. Please request a new code."}), 401
+
+            is_authorized = True
+
+        if not is_authorized:
+            return jsonify({"message": "Unauthorized."}), 401
+
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
+        encrypted_new_pwd = encrypt_credential(new_password)
 
         users_collection.update_one(
             {"rollNo": rollNo},
-            {"$set": {"password": password, "passwordUpdatedAt": now_iso}}
+            {"$set": {"password": encrypted_new_pwd, "passwordUpdatedAt": now_iso}}
         )
 
         recipient_email = (user.get('email') or '').strip() or f"{rollNo.lower()}@psgtech.ac.in"
@@ -1395,7 +1620,7 @@ def attendance_summary():
     refresh = request.args.get('refresh', '').lower() == 'true'
     if refresh and user.get('password'):
         try:
-            updated_doc, err = sync_student_dual_portal(roll_no, user['password'])
+            updated_doc, err = sync_student_dual_portal(roll_no, get_student_portal_password(user))
             if updated_doc:
                 user = updated_doc
         except Exception as sync_err:
@@ -1899,7 +2124,7 @@ def hostel_student_summary(rollno):
     res, status, err_msg = hostel_service.get_student_hostel_overview(
         roll_number=req_roll,
         force_refresh=refresh,
-        password=user.get('password')
+        password=get_student_portal_password(user)
     )
     if err_msg:
         return jsonify({"success": False, "error": err_msg}), status
@@ -1928,7 +2153,7 @@ def hostel_student_room(rollno):
     res, status, err_msg = hostel_service.get_student_room(
         roll_number=req_roll,
         force_refresh=refresh,
-        password=user.get('password')
+        password=get_student_portal_password(user)
     )
     if err_msg:
         return jsonify({"success": False, "error": err_msg}), status
@@ -1957,7 +2182,7 @@ def hostel_student_mess(rollno):
     res, status, err_msg = hostel_service.get_student_mess(
         roll_number=req_roll,
         force_refresh=refresh,
-        password=user.get('password')
+        password=get_student_portal_password(user)
     )
     if err_msg:
         return jsonify({"success": False, "error": err_msg}), status
@@ -1986,7 +2211,7 @@ def hostel_student_fees(rollno):
     res, status, err_msg = hostel_service.get_student_fees(
         roll_number=req_roll,
         force_refresh=refresh,
-        password=user.get('password')
+        password=get_student_portal_password(user)
     )
     if err_msg:
         return jsonify({"success": False, "error": err_msg}), status
@@ -2015,7 +2240,7 @@ def hostel_student_leave(rollno):
     res, status, err_msg = hostel_service.get_student_leave(
         roll_number=req_roll,
         force_refresh=refresh,
-        password=user.get('password')
+        password=get_student_portal_password(user)
     )
     if err_msg:
         return jsonify({"success": False, "error": err_msg}), status
@@ -2079,23 +2304,20 @@ def chatbot_endpoint():
     if not message:
         return jsonify({"error": "Message cannot be empty."}), 400
 
-    # Extract roll number from auth session or request payload
-    roll_no = None
+    # Extract roll number strictly from verified server-side authentication session
     user, status_code, err = get_authenticated_student(request)
-    if user:
-        roll_no = user.get('rollNo')
-    else:
-        # Fallback to rollNo in body or X-Roll-No header
-        roll_no = data.get('rollNo') or request.headers.get('X-Roll-No')
+    if status_code == 403:
+        return jsonify({"error": err or "Cross-user access denied"}), 403
 
-    if not roll_no:
+    if not user:
         return jsonify({
-            "reply": "Hi! Please log in with your PSG Tech roll number so I can fetch your personalized attendance, marks, and timetable. How can I help you navigate?",
+            "reply": "Hi! Please log in with your PSG Tech roll number to access your personalized attendance, marks, and schedule. How can I help you navigate?",
             "intent": "unauthenticated",
             "navigation": {"path": "/login", "label": "Go to Login Page →"},
             "suggestions": ["Take me to Login", "How do I register?", "What is Student Sync?"]
         }), 200
 
+    roll_no = user.get('rollNo')
     history = data.get('history', [])
     response = process_chatbot_query(message, roll_no, conversation_history=history)
     return jsonify(response), 200

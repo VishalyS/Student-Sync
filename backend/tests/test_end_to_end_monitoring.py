@@ -488,35 +488,45 @@ class TestEndToEndMonitoring(unittest.TestCase):
     # Test 19: Student isolation & unauthorized access prevention
     # -------------------------------------------------------------------------
     def test_19_student_isolation_unauthorized_access(self):
+        iso_roll_a = "SYNTH_ISO_A"
+        iso_roll_b = "SYNTH_ISO_B"
+        self.users_col.delete_many({"rollNo": {"$in": [iso_roll_a, iso_roll_b]}})
+        self.notifs_col.delete_many({"rollNo": {"$in": [iso_roll_a, iso_roll_b]}})
+
         # Insert records for student A and student B
         self.users_col.insert_one({
-            "rollNo": self.roll_a,
+            "rollNo": iso_roll_a,
             "name": "Student A",
             "password": "secret_password_a",
             "cgpa": 8.1
         })
         self.users_col.insert_one({
-            "rollNo": self.roll_b,
+            "rollNo": iso_roll_b,
             "name": "Student B",
             "password": "secret_password_b",
             "cgpa": 9.2
         })
-        self.notifs_col.insert_one({"rollNo": self.roll_a, "title": "Student A Alert", "createdAt": datetime.now(timezone.utc).isoformat(), "read": False})
-        self.notifs_col.insert_one({"rollNo": self.roll_b, "title": "Student B Alert", "createdAt": datetime.now(timezone.utc).isoformat(), "read": False})
+        self.notifs_col.insert_one({"rollNo": iso_roll_a, "title": "Student A Alert", "createdAt": datetime.now(timezone.utc).isoformat(), "read": False})
+        self.notifs_col.insert_one({"rollNo": iso_roll_b, "title": "Student B Alert", "createdAt": datetime.now(timezone.utc).isoformat(), "read": False})
 
         # Fetch profile for student A
-        resp_a = self.app_client.get(f'/profile?rollNo={self.roll_a}')
+        resp_a = self.app_client.get(f'/profile?rollNo={iso_roll_a}')
         self.assertEqual(resp_a.status_code, 200)
         data_a = resp_a.get_json()
-        self.assertEqual(data_a['rollNo'], self.roll_a)
+        self.assertEqual(data_a['rollNo'], iso_roll_a)
         self.assertNotIn('password', data_a, "Password must NEVER be returned in API profile response.")
 
         # Fetch notifications for student A
-        notifs_res_a = self.app_client.get(f'/notifications?rollNo={self.roll_a}')
+        notifs_res_a = self.app_client.get(f'/notifications?rollNo={iso_roll_a}')
         self.assertEqual(notifs_res_a.status_code, 200)
         notifs_a = notifs_res_a.get_json()['notifications']
         self.assertEqual(len(notifs_a), 1)
         self.assertEqual(notifs_a[0]['title'], "Student A Alert")
+
+        # Cleanup isolated records
+        self.users_col.delete_many({"rollNo": {"$in": [iso_roll_a, iso_roll_b]}})
+        self.notifs_col.delete_many({"rollNo": {"$in": [iso_roll_a, iso_roll_b]}})
+
 
     # -------------------------------------------------------------------------
     # Test 20: All existing regression tests continue to pass

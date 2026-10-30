@@ -88,6 +88,12 @@ const Login = () => {
                 <label htmlFor="password" className="block text-xs font-medium text-gray-300">
                   StudZone Password
                 </label>
+                <Link
+                  to={rollNo.trim() ? `/update/${rollNo.trim().toUpperCase()}` : '/update'}
+                  className="text-[11px] text-purple-400 hover:text-purple-300 transition-colors"
+                >
+                  Forgot password?
+                </Link>
               </div>
               <div className="relative">
                 <input
