@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { FiLogIn, FiEye, FiEyeOff, FiAlertCircle } from 'react-icons/fi';
+import { getApiUrl } from './apiConfig.js';
 
 const Login = () => {
   const [rollNo, setRollNo] = useState('');
@@ -16,7 +17,7 @@ const Login = () => {
 
     try {
       setLoading(true);
-      const response = await fetch('/api/login', {
+      const response = await fetch(getApiUrl('/api/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rollNo, password }),
@@ -27,7 +28,7 @@ const Login = () => {
         localStorage.setItem('student_sync_user', JSON.stringify(userData));
         navigate('/dashboard', { state: userData });
       } else if (response.status === 403) {
-        const responseData = await response.json();
+        const responseData = await response.json().catch(() => ({}));
         if (responseData.needsPasswordUpdate && responseData.redirectUrl) {
           setError(responseData.message || 'Please update your password to continue.');
           setTimeout(() => {
@@ -36,8 +37,11 @@ const Login = () => {
         } else {
           setError(responseData.message || 'Authentication required.');
         }
+      } else if (response.status === 502 || response.status === 503 || response.status === 504) {
+        const errorData = await response.json().catch(() => ({}));
+        setError(errorData.message || 'The Student Sync backend is waking up on Render. Please wait 30 seconds and try again.');
       } else {
-        const errorData = await response.json();
+        const errorData = await response.json().catch(() => ({}));
         setError(errorData.message || 'Invalid credentials. Please check your roll number and password.');
       }
     } catch (err) {
