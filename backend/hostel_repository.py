@@ -13,11 +13,20 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger("studentsync.hostel.repository")
 
 # Ensure standalone hostel subsystem is on sys.path
-HOSTEL_SUBSYSTEM_PATH = os.getenv(
-    "HOSTEL_SUBSYSTEM_PATH",
-    r"C:\Users\visha\OneDrive\Desktop\Student Sync - Hostel"
-)
-if os.path.exists(HOSTEL_SUBSYSTEM_PATH) and HOSTEL_SUBSYSTEM_PATH not in sys.path:
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_bundled_hostel = os.path.join(_current_dir, "hostel_subsystem")
+_env_hostel = os.getenv("HOSTEL_SUBSYSTEM_PATH")
+_win_hostel_fallback = r"C:\Users\visha\OneDrive\Desktop\Student Sync - Hostel"
+
+HOSTEL_SUBSYSTEM_PATH = None
+if _env_hostel and os.path.exists(_env_hostel):
+    HOSTEL_SUBSYSTEM_PATH = _env_hostel
+elif os.path.exists(_bundled_hostel):
+    HOSTEL_SUBSYSTEM_PATH = _bundled_hostel
+elif os.path.exists(_win_hostel_fallback):
+    HOSTEL_SUBSYSTEM_PATH = _win_hostel_fallback
+
+if HOSTEL_SUBSYSTEM_PATH and HOSTEL_SUBSYSTEM_PATH not in sys.path:
     sys.path.insert(0, HOSTEL_SUBSYSTEM_PATH)
 
 try:
